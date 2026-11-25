@@ -26,7 +26,7 @@ npm run typecheck
 npm run build
 ```
 
-The Android APK build additionally requires an Android SDK with `ANDROID_HOME` or `android/local.properties` configured. The current Android implementation reports foreground app usage and persists a deduplicated local event ledger. It does not claim screen-on time equivalence or unbypassable device control.
+The Android APK build additionally requires an Android SDK with `ANDROID_HOME` or `android/local.properties` configured. The Android implementation reports foreground app usage, persists a deduplicated local event ledger, and evaluates offline device/app policies for day/week/month limits, schedules, whitelists, protected system packages, force-stop state, and temporary extensions. A user-enabled AccessibilityService can show a visible restriction page; ordinary mode is explicitly not an unbypassable system lock and does not hide or enable permissions.
 
 ## Deployment notes
 

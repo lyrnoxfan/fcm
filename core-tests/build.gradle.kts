@@ -5,11 +5,11 @@ plugins {
 sourceSets {
     main {
         kotlin.setSrcDirs(listOf("../android/app/src/main/java"))
-        kotlin.include("com/focusguard/core/UsageAggregation.kt")
+        kotlin.include("com/focusguard/core/UsageAggregation.kt", "com/focusguard/core/PolicyEngine.kt")
     }
     test {
         kotlin.setSrcDirs(listOf("../android/app/src/test/java"))
-        kotlin.include("com/focusguard/core/UsageAggregationTest.kt")
+        kotlin.include("com/focusguard/core/UsageAggregationTest.kt", "com/focusguard/core/PolicyEngineTest.kt")
     }
 }
 

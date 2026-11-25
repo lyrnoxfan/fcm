@@ -6,12 +6,31 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
     </queries>
     <application
         android:allowBackup="false"
         android:label="FocusGuard"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity
+            android:name=".enforcement.BlockedActivity"
+            android:exported="false"
+            android:excludeFromRecents="true" />
+        <service
+            android:name=".enforcement.PolicyAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/policy_accessibility_service" />
+        </service>
         <activity
             android:name=".MainActivity"
             android:exported="true">
