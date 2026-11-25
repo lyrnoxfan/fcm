@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.focusguard.usage.UsageRepository
+import com.focusguard.sync.SyncScheduler
 import com.focusguard.core.PolicyConfig
 import com.focusguard.core.UsageLimitRule
 import com.focusguard.core.UsagePeriod
@@ -53,6 +54,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SyncScheduler.schedule(this)
         setContent {
             MaterialTheme {
                 var hasPermission by remember { mutableStateOf(repository.hasUsageAccess()) }

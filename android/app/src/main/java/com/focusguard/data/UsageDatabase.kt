@@ -35,6 +35,29 @@ data class UsageDailyEntity(
     val updatedAtMillis: Long,
 )
 
+@Entity(tableName = "sync_commands")
+data class SyncCommandEntity(
+    @PrimaryKey val commandId: String,
+    val type: String,
+    val status: String,
+    val receivedAtMillis: Long,
+    val expiresAtMillis: Long?,
+    val acknowledgedAtMillis: Long?,
+    val detail: String?,
+)
+
+@Dao
+interface SyncCommandDao {
+    @Query("SELECT * FROM sync_commands WHERE commandId = :commandId")
+    suspend fun get(commandId: String): SyncCommandEntity?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(entity: SyncCommandEntity): Long
+
+    @Query("UPDATE sync_commands SET status = :status, acknowledgedAtMillis = :acknowledgedAtMillis, detail = :detail WHERE commandId = :commandId")
+    suspend fun mark(commandId: String, status: String, acknowledgedAtMillis: Long?, detail: String?)
+}
+
 @Dao
 interface UsageDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -59,10 +82,11 @@ interface UsageDao {
     suspend fun latestDaily(): List<UsageDailyEntity>
 }
 
-@Database(entities = [UsageEventEntity::class, UsageDailyEntity::class, PolicyEntity::class], version = 2, exportSchema = false)
+@Database(entities = [UsageEventEntity::class, UsageDailyEntity::class, PolicyEntity::class, SyncCommandEntity::class], version = 3, exportSchema = false)
 abstract class UsageDatabase : RoomDatabase() {
     abstract fun usageDao(): UsageDao
     abstract fun policyDao(): PolicyDao
+    abstract fun syncCommandDao(): SyncCommandDao
 
     companion object {
         @Volatile private var instance: UsageDatabase? = null
@@ -72,7 +96,7 @@ abstract class UsageDatabase : RoomDatabase() {
                 context.applicationContext,
                 UsageDatabase::class.java,
                 "focusguard-usage.db",
-            ).addMigrations(PolicyDatabaseMigration).build().also { instance = it }
+            ).addMigrations(PolicyDatabaseMigration, SyncDatabaseMigration).build().also { instance = it }
         }
     }
 }
