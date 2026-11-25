@@ -1,0 +1,25 @@
+# Gradle and Android
+.gradle/
+.kotlin/
+**/build/
+local.properties
+*.iml
+.idea/
+*.apk
+*.aab
+
+# Node and generated web output
+node_modules/
+**/node_modules/
+web/dist/
+web/.astro/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+backend/.wrangler/
+
+# Test and tool output
+coverage/
+.DS_Store
