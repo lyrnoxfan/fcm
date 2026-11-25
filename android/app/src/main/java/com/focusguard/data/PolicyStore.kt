@@ -49,7 +49,9 @@ object PolicyDatabaseMigration : Migration(1, 2) {
 
 class PolicyStore(private val dao: PolicyDao) {
     fun observe(): Flow<PolicyEntity?> = dao.observe()
-    suspend fun load(): PolicyConfig = dao.get()?.configJson?.let(PolicyCodec::decode) ?: PolicyConfig()
+    suspend fun load(): PolicyConfig = runCatching {
+        dao.get()?.configJson?.let(PolicyCodec::decode) ?: PolicyConfig()
+    }.getOrElse { PolicyConfig() }
 
     suspend fun save(config: PolicyConfig, nowMillis: Long = System.currentTimeMillis()): Long {
         val version = (dao.get()?.version ?: 0L) + 1L

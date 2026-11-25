@@ -43,7 +43,7 @@ class UsageRepository(context: Context) {
 
     suspend fun snapshotAt(now: ZonedDateTime): UsageSnapshot = withContext(Dispatchers.IO) {
         val rows = database.usageDao().latestDaily()
-        val starts = UsagePeriod.entries.associateWith { UsageAggregationPeriodStart(now.toLocalDate(), it) }
+        val starts = UsagePeriod.entries.associateWith { periodStart(now.toLocalDate(), it) }
         val device = mutableMapOf<UsagePeriod, Long>()
         val apps = mutableMapOf<String, MutableMap<UsagePeriod, Long>>()
         rows.forEach { row ->
@@ -132,7 +132,7 @@ class UsageRepository(context: Context) {
         dao.upsertDaily(daily)
     }
 
-    private fun UsageAggregationPeriodStart(date: LocalDate, period: UsagePeriod): LocalDate = when (period) {
+    private fun periodStart(date: LocalDate, period: UsagePeriod): LocalDate = when (period) {
         UsagePeriod.DAY -> date
         UsagePeriod.WEEK -> UsageAggregation.weekStart(date)
         UsagePeriod.MONTH -> UsageAggregation.monthStart(date)
