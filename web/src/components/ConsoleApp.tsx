@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode, SubmitEvent } from 'react';
 import {
   Activity, AlertCircle, ArrowRight, Bell, Check,
@@ -59,12 +59,15 @@ export default function ConsoleApp() {
   const [policyDescription, setPolicyDescription] = useState('');
   const [policyBusy, setPolicyBusy] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const [pairingCode, setPairingCode] = useState<{ code: string; expiresIn: number } | null>(null);
+  const refreshGeneration = useRef(0);
+  const loggingOut = useRef(false);
 
   useEffect(() => {
     const current = readConfig();
     setConfig(current);
     setBaseDraft(current.baseUrl);
-    setAuthenticated(Boolean(current.token));
+    setAuthenticated(Boolean(current.token && current.baseUrl));
     setReady(true);
   }, []);
 
@@ -73,7 +76,14 @@ export default function ConsoleApp() {
     window.setTimeout(() => setNotice((current) => current?.text === text ? null : current), 6000);
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    if (loggingOut.current) return;
+    loggingOut.current = true;
+    const current = config;
+    try {
+      if (current.baseUrl && current.token) await request(current, API_PATHS.logout, { method: 'POST' });
+    } catch { /* local logout must complete even when API is unavailable */ }
+    refreshGeneration.current += 1;
     clearConfig();
     setConfig({ baseUrl: '', token: '' });
     setAuthenticated(false);
@@ -83,7 +93,8 @@ export default function ConsoleApp() {
     setUsage([]);
     setLoaded(false);
     setUserLabel('');
-  }, []);
+    loggingOut.current = false;
+  }, [config]);
 
   useEffect(() => {
     const handleUnauthorized = () => {
@@ -105,25 +116,32 @@ export default function ConsoleApp() {
 
   const refresh = useCallback(async () => {
     if (!config.baseUrl || !config.token) return;
+    const generation = ++refreshGeneration.current;
     setLoading(true);
     setNotice(null);
+    setLoaded(false);
+    setDevices([]);
+    setPolicies([]);
+    setUsage([]);
     try {
       const [deviceResponse, policyResponse] = await Promise.all([
         request<unknown>(config, API_PATHS.devices),
         request<unknown>(config, API_PATHS.policies),
       ]);
+      if (generation !== refreshGeneration.current) return;
       const nextDevices = unwrapList<unknown>(deviceResponse).map(normalizeDevice);
       setDevices(nextDevices);
       setPolicies(unwrapList<unknown>(policyResponse).map(normalizePolicy));
       const usageResults = await Promise.allSettled(nextDevices.map((device) => request<unknown>(config, `${API_PATHS.usage}?device_id=${encodeURIComponent(device.id)}`)));
+      if (generation !== refreshGeneration.current) return;
       const nextUsage: UsageRecord[] = [];
       usageResults.forEach((result) => { if (result.status === 'fulfilled') { try { nextUsage.push(...unwrapList<unknown>(result.value).map(normalizeUsage)); } catch { /* usage is optional */ } } });
       setUsage(nextUsage);
       setLoaded(true);
     } catch (error) {
-      notify('error', error instanceof Error ? error.message : '读取控制台数据失败。');
+      if (generation === refreshGeneration.current) notify('error', error instanceof Error ? error.message : '读取控制台数据失败。');
     } finally {
-      setLoading(false);
+      if (generation === refreshGeneration.current) setLoading(false);
     }
   }, [config, notify]);
 
@@ -138,11 +156,15 @@ export default function ConsoleApp() {
     return devices.filter((device) => [device.name, device.id, device.status, device.platform].some((value) => value?.toLowerCase().includes(term)));
   }, [devices, search]);
   const currentDevice = devices.find((device) => device.id === selected) || null;
+  const commandForDevice = useCallback((deviceId: string) => Object.values(commands)
+    .filter((command) => command.deviceId === deviceId)
+    .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))[0], [commands]);
 
   async function authenticate(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setNotice(null);
-    const baseUrl = normalizeBaseUrl(baseDraft);
+    let baseUrl: string;
+    try { baseUrl = normalizeBaseUrl(baseDraft); } catch (error) { return notify('error', error instanceof Error ? error.message : 'API Base URL 无效。'); }
     if (!baseUrl) return notify('error', '请填写 API Base URL。');
     setAuthBusy(true);
     const path = authMode === 'login' ? API_PATHS.login : API_PATHS.register;
@@ -168,7 +190,8 @@ export default function ConsoleApp() {
 
   function saveBaseUrl(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    const baseUrl = normalizeBaseUrl(baseDraft);
+    let baseUrl: string;
+    try { baseUrl = normalizeBaseUrl(baseDraft); } catch (error) { return notify('error', error instanceof Error ? error.message : 'API Base URL 无效。'); }
     if (!baseUrl) return notify('error', 'API Base URL 不能为空。');
     const next = { ...config, baseUrl };
     saveConfig(next);
@@ -181,24 +204,25 @@ export default function ConsoleApp() {
 
   async function createPairingCode() {
     try {
-      const result = await request<{ code?: string; expires_in?: number }>(config, API_PATHS.pairingCodes, { method: 'POST', body: JSON.stringify({}) });
+      const result = await request<{ code?: string; expires_in?: number; expiresIn?: number }>(config, API_PATHS.pairingCodes, { method: 'POST', body: JSON.stringify({}) });
       if (!result.code) throw new Error('配对码响应中没有 code。');
-      notify('success', `一次性配对码：${result.code}（${Math.round((result.expires_in || 600) / 60)} 分钟内有效）`);
+      setPairingCode({ code: result.code, expiresIn: result.expires_in ?? result.expiresIn ?? 600 });
     } catch (error) {
       notify('error', error instanceof Error ? error.message : '生成配对码失败。');
     }
   }
 
   async function sendDeviceCommand(device: Device, command: 'sync' | 'lock' | 'unlock') {
-    setCommandBusy(`${device.id}:${command}`);
+    const busyKey = `${device.id}:${command}`;
+    setCommandBusy(busyKey);
     try {
       const response = await request<unknown>(config, `${API_PATHS.devices}/${encodeURIComponent(device.id)}/commands`, {
-        method: 'POST', body: JSON.stringify({ command, kind: command }),
+        method: 'POST', headers: { 'Idempotency-Key': `${device.id}:${command}:${Date.now()}` }, body: JSON.stringify({ command, kind: command }),
       });
       const queued = normalizeCommand(response);
       if (!queued.id) throw new Error('命令响应中未找到 command id，无法查询执行状态。');
       const initial: CommandState = { ...queued, deviceId: device.id, status: queued.status || 'pending' };
-      setCommands((current) => ({ ...current, [device.id]: initial }));
+      setCommands((current) => ({ ...current, [initial.id]: initial }));
       notify('success', `命令“${commandLabel(command)}”已发送，正在查询执行状态。`);
       void pollCommand(device.id, initial.id);
     } catch (error) {
@@ -209,12 +233,12 @@ export default function ConsoleApp() {
   }
 
   async function pollCommand(deviceId: string, commandId: string) {
-    const terminal = new Set(['completed', 'failed', 'cancelled', 'success', 'error']);
+    const terminal = new Set(['completed', 'failed', 'cancelled', 'success', 'error', 'executed', 'expired']);
     for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
         const result = await request<unknown>(config, `${API_PATHS.devices}/${encodeURIComponent(deviceId)}/commands/${encodeURIComponent(commandId)}`);
         const next = { ...normalizeCommand(result), deviceId };
-        setCommands((current) => ({ ...current, [deviceId]: next }));
+        setCommands((current) => ({ ...current, [commandId]: next }));
         if (terminal.has(next.status.toLowerCase())) {
           notify(next.status.toLowerCase() === 'completed' || next.status.toLowerCase() === 'success' ? 'success' : 'error', `命令状态：${next.status}`);
           return;
@@ -306,15 +330,16 @@ export default function ConsoleApp() {
       </header>
       {notice && <div className={`toast ${notice.kind}`} role="status"><span className="toast-icon">{notice.kind === 'error' ? <AlertCircle size={17} /> : <Check size={17} />}</span><span>{notice.text}</span><button className="toast-close" onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div>}
       <div className="content-area">
-        {view === 'overview' && <Overview devices={devices} policies={policies} onlineCount={onlineCount} loaded={loaded} loading={loading} usage={usage} commands={commands} onViewDevices={() => setView('devices')} onViewPolicies={() => setView('policies')} onRefresh={() => void refresh()} onSelect={setSelected} onCommand={sendDeviceCommand} commandBusy={commandBusy} />}
-        {view === 'devices' && <DevicesView devices={filteredDevices} total={devices.length} search={search} setSearch={setSearch} loaded={loaded} loading={loading} commands={commands} onRefresh={() => void refresh()} onPair={() => void createPairingCode()} onSelect={setSelected} onCommand={sendDeviceCommand} commandBusy={commandBusy} />}
+        {view === 'overview' && <Overview devices={devices} policies={policies} onlineCount={onlineCount} loaded={loaded} loading={loading} usage={usage} commands={commands} commandForDevice={commandForDevice} onViewDevices={() => setView('devices')} onViewPolicies={() => setView('policies')} onRefresh={() => void refresh()} onSelect={setSelected} onCommand={sendDeviceCommand} commandBusy={commandBusy} />}
+        {view === 'devices' && <DevicesView devices={filteredDevices} total={devices.length} search={search} setSearch={setSearch} loaded={loaded} loading={loading} commands={commands} commandForDevice={commandForDevice} onRefresh={() => void refresh()} onPair={() => void createPairingCode()} onSelect={setSelected} onCommand={sendDeviceCommand} commandBusy={commandBusy} />}
         {view === 'policies' && <PoliciesView policies={policies} devices={devices} loaded={loaded} onCreate={() => setNewPolicyOpen(true)} onToggle={togglePolicy} onAssign={assignPolicy} />}
       </div>
       <footer className="footer"><span>FOCUSGUARD CONTROL PLANE <i>·</i> v0.1.0</span><span><CircleHelp size={13} /> API {config.baseUrl}</span></footer>
     </main>
-    {currentDevice && <DeviceDrawer device={currentDevice} command={commands[currentDevice.id]} onClose={() => setSelected(null)} onCommand={sendDeviceCommand} busy={commandBusy} />}
+    {currentDevice && <DeviceDrawer device={currentDevice} command={commandForDevice(currentDevice.id)} onClose={() => setSelected(null)} onCommand={sendDeviceCommand} busy={commandBusy} />}
     {newPolicyOpen && <PolicyModal name={policyName} setName={setPolicyName} description={policyDescription} setDescription={setPolicyDescription} busy={policyBusy} onClose={() => setNewPolicyOpen(false)} onSubmit={createPolicy} />}
     {showSettings && <SettingsModal value={baseDraft} setValue={setBaseDraft} onClose={() => setShowSettings(false)} onSubmit={saveBaseUrl} />}
+    {pairingCode && <PairingCodeModal code={pairingCode.code} expiresIn={pairingCode.expiresIn} onClose={() => setPairingCode(null)} />}
   </div>;
 }
 
@@ -346,7 +371,7 @@ function AuthScreen(props: {
 }
 
 function Overview(props: {
-  devices: Device[]; policies: Policy[]; onlineCount: number; loaded: boolean; loading: boolean; usage: UsageRecord[]; commands: Record<string, CommandState>;
+  devices: Device[]; policies: Policy[]; onlineCount: number; loaded: boolean; loading: boolean; usage: UsageRecord[]; commands: Record<string, CommandState>; commandForDevice: (deviceId: string) => CommandState | undefined;
   onViewDevices: () => void; onViewPolicies: () => void; onRefresh: () => void; onSelect: (id: string) => void;
   onCommand: (device: Device, command: 'sync' | 'lock' | 'unlock') => void; commandBusy: string | null;
 }) {
@@ -358,7 +383,7 @@ function Overview(props: {
     <div className="metric-grid"><Metric icon={<Laptop size={17} />} label="已注册设备" value={props.loaded ? String(props.devices.length) : '—'} note={props.loaded ? 'API 返回设备总数' : '等待 API 数据'} tone="mint" /><Metric icon={<Wifi size={17} />} label="在线设备" value={props.loaded ? String(props.onlineCount) : '—'} note={props.loaded ? `${props.loaded ? Math.max(offline, 0) : 0} 台设备当前离线` : '等待 API 数据'} tone="blue" /><Metric icon={<ShieldCheck size={17} />} label="已配置策略" value={props.loaded ? String(props.policies.length) : '—'} note={props.loaded ? `${props.policies.filter((p) => p.enabled).length} 条已启用` : '等待 API 数据'} tone="amber" /><Metric icon={<Activity size={17} />} label="运行状态" value={props.loaded ? '正常' : '待连接'} note={props.loaded ? '数据同步已完成' : '尚未读取 API'} tone="rose" /><Metric icon={<Clock3 size={17} />} label="使用时长" value={props.loaded ? usageLabel : '—'} note={props.loaded ? '来自 /usage 实时汇总' : '后端未返回使用数据'} tone="blue" /></div>
     <div className="section-heading"><div><h2>设备状态</h2><span className="section-caption">DEVICE FLEET <i>·</i> {props.loaded ? `${props.devices.length} TOTAL` : 'NO DATA'}</span></div><button className="link-button" onClick={props.onViewDevices}>查看全部 <ArrowRight size={15} /></button></div>
     <div className="panel fleet-panel"><div className="panel-head"><div><b>设备活动</b><span>最新接入设备的连接状态</span></div><span className={`data-pill ${props.loaded ? 'is-live' : ''}`}><span />{props.loaded ? 'API DATA' : 'NOT LOADED'}</span></div>
-      {!props.loaded || props.devices.length === 0 ? <EmptyState loading={props.loading} loaded={props.loaded} kind="device" onAction={props.onRefresh} /> : <div className="device-list">{props.devices.slice(0, 5).map((device) => <DeviceRow key={device.id} device={device} command={props.commands[device.id]} onSelect={props.onSelect} onCommand={props.onCommand} busy={props.commandBusy} />)}</div>}
+      {!props.loaded || props.devices.length === 0 ? <EmptyState loading={props.loading} loaded={props.loaded} kind="device" onAction={props.onRefresh} /> : <div className="device-list">{props.devices.slice(0, 5).map((device) => <DeviceRow key={device.id} device={device} command={props.commandForDevice(device.id)} onSelect={props.onSelect} onCommand={props.onCommand} busy={props.commandBusy} />)}</div>}
     </div>
     <div className="lower-grid"><section><div className="section-heading compact"><div><h2>策略概览</h2><span className="section-caption">POLICY STATUS</span></div><button className="link-button" onClick={props.onViewPolicies}>管理策略 <ArrowRight size={15} /></button></div><div className="panel policy-overview">{!props.loaded || props.policies.length === 0 ? <EmptyState loading={props.loading} loaded={props.loaded} kind="policy" onAction={props.onViewPolicies} /> : props.policies.slice(0, 3).map((policy) => <PolicySummary key={policy.id} policy={policy} />)}</div></section>
       <section className="activity-section"><div className="section-heading compact"><div><h2>控制摘要</h2><span className="section-caption">LIVE SNAPSHOT</span></div><span className="mini-live"><span /> LIVE</span></div><div className="panel summary-panel"><div className="summary-top"><span className="summary-icon"><Sparkles size={17} /></span><span className="summary-label">FLEET HEALTH</span><span className="summary-indicator" /></div><strong>{props.loaded ? (props.devices.length ? `${Math.round(props.onlineCount / props.devices.length * 100)}%` : '0%') : '—'}</strong><p>{props.loaded ? '在线率基于 API 当前设备状态' : '连接 API 后显示设备健康状态'}</p><div className="summary-divider" /><div className="summary-row"><span><span className="tiny-dot green" />在线</span><b>{props.loaded ? props.onlineCount : '—'}</b></div><div className="summary-row"><span><span className="tiny-dot gray" />离线</span><b>{props.loaded ? offline : '—'}</b></div></div></section></div>
@@ -377,13 +402,13 @@ function EmptyState(props: { loading: boolean; loaded: boolean; kind: 'device' |
 function DeviceRow(props: { device: Device; command?: CommandState; onSelect: (id: string) => void; onCommand: (device: Device, command: 'sync' | 'lock' | 'unlock') => void; busy: string | null }) {
   const { device } = props;
   const online = isOnline(device.status);
-  return <div className="device-row"><button className="device-identity" onClick={() => props.onSelect(device.id)}><span className={`device-icon ${online ? 'online' : ''}`}>{device.platform?.toLowerCase().includes('ios') ? <Smartphone size={17} /> : <Laptop size={18} />}</span><span className="device-name"><b>{device.name || device.id}</b><small>{device.id}</small></span></button><span className={`status-chip ${online ? 'online' : 'offline'}`}><span />{device.status || 'unknown'}</span><span className="device-time"><Clock3 size={13} />{prettyTime(device.lastSeen)}</span><span className="device-command-status">{props.command?.status || device.commandStatus || '无命令'}</span><button className="row-action" onClick={() => props.onCommand(device, 'sync')} disabled={props.busy === `${device.id}:sync`} title="立即同步"><RefreshCw size={15} className={props.busy === `${device.id}:sync` ? 'spin' : ''} /></button><button className="row-more" onClick={() => props.onSelect(device.id)} title="设备详情"><ArrowRight size={15} /></button></div>;
+  return <div className="device-row"><button className="device-identity" onClick={() => props.onSelect(device.id)}><span className={`device-icon ${online ? 'online' : ''}`}>{device.platform?.toLowerCase().includes('ios') ? <Smartphone size={17} /> : <Laptop size={18} />}</span><span className="device-name"><b>{device.name || device.id}</b><small>{device.id}</small></span></button><span className={`status-chip ${online ? 'online' : 'offline'}`}><span />{device.status || 'unknown'}</span><span className="device-time"><Clock3 size={13} />{prettyTime(device.lastSeen)}</span><span className="device-command-status" title={props.command?.error || undefined}>{props.command?.status || device.commandStatus || '无命令'}{props.command?.error ? ` · ${props.command.error}` : ''}</span><button className="row-action" onClick={() => props.onCommand(device, 'sync')} disabled={props.busy === `${device.id}:sync`} title="立即同步"><RefreshCw size={15} className={props.busy === `${device.id}:sync` ? 'spin' : ''} /></button><button className="row-more" onClick={() => props.onSelect(device.id)} title="设备详情"><ArrowRight size={15} /></button></div>;
 }
 
-function DevicesView(props: { devices: Device[]; total: number; search: string; setSearch: (value: string) => void; loaded: boolean; loading: boolean; commands: Record<string, CommandState>; onRefresh: () => void; onPair: () => void; onSelect: (id: string) => void; onCommand: (device: Device, command: 'sync' | 'lock' | 'unlock') => void; commandBusy: string | null }) {
+function DevicesView(props: { devices: Device[]; total: number; search: string; setSearch: (value: string) => void; loaded: boolean; loading: boolean; commands: Record<string, CommandState>; commandForDevice: (deviceId: string) => CommandState | undefined; onRefresh: () => void; onPair: () => void; onSelect: (id: string) => void; onCommand: (device: Device, command: 'sync' | 'lock' | 'unlock') => void; commandBusy: string | null }) {
   return <><div className="page-heading"><div><div className="eyebrow"><span className="heading-mark" /> FLEET MANAGEMENT</div><h1>设备</h1><p>查看设备连接状态并执行远程命令。</p></div><div className="heading-actions"><button className="secondary-button" onClick={props.onPair}><Plus size={15} /> 生成配对码</button><button className="secondary-button" onClick={props.onRefresh} disabled={props.loading}>{props.loading ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={15} />} 刷新</button></div></div>
     <div className="toolbar"><div className="search-field"><Search size={16} /><input placeholder="搜索名称、设备 ID 或状态" value={props.search} onChange={(event) => props.setSearch(event.target.value)} /></div><div className="toolbar-meta"><span>{props.loaded ? `${props.devices.length} / ${props.total} 台设备` : '尚未读取数据'}</span><button className="icon-button" title="刷新列表" onClick={props.onRefresh}><SlidersHorizontal size={16} /></button></div></div>
-    <div className="panel table-panel"><div className="table-head"><span>设备</span><span>状态</span><span>最近连接</span><span>操作</span></div>{!props.loaded || props.devices.length === 0 ? <EmptyState loaded={props.loaded} loading={props.loading} kind="device" onAction={props.onRefresh} /> : <div className="device-list">{props.devices.map((device) => <DeviceRow key={device.id} device={device} command={props.commands[device.id]} onSelect={props.onSelect} onCommand={props.onCommand} busy={props.commandBusy} />)}</div>}</div>
+    <div className="panel table-panel"><div className="table-head"><span>设备</span><span>状态</span><span>最近连接</span><span>操作</span></div>{!props.loaded || props.devices.length === 0 ? <EmptyState loaded={props.loaded} loading={props.loading} kind="device" onAction={props.onRefresh} /> : <div className="device-list">{props.devices.map((device) => <DeviceRow key={device.id} device={device} command={props.commandForDevice(device.id)} onSelect={props.onSelect} onCommand={props.onCommand} busy={props.commandBusy} />)}</div>}</div>
   </>;
 }
 
@@ -400,7 +425,7 @@ function PoliciesView(props: { policies: Policy[]; devices: Device[]; loaded: bo
 
 function DeviceDrawer(props: { device: Device; command?: CommandState; onClose: () => void; onCommand: (device: Device, command: 'sync' | 'lock' | 'unlock') => void; busy: string | null }) {
   const online = isOnline(props.device.status);
-  return <div className="drawer-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) props.onClose(); }}><aside className="device-drawer"><div className="drawer-top"><span>DEVICE DETAILS</span><button className="icon-button" onClick={props.onClose} aria-label="关闭"><X size={18} /></button></div><div className="drawer-device"><span className={`device-icon big ${online ? 'online' : ''}`}>{props.device.platform?.toLowerCase().includes('ios') ? <Smartphone size={24} /> : <Laptop size={24} />}</span><h2>{props.device.name || props.device.id}</h2><span>{props.device.id}</span><span className={`status-chip ${online ? 'online' : 'offline'}`}><span />{props.device.status || 'unknown'}</span></div><div className="drawer-details"><div><span>平台</span><b>{props.device.platform || 'API 未提供'}</b></div><div><span>最近连接</span><b>{prettyTime(props.device.lastSeen)}</b></div><div><span>策略</span><b>{props.device.policyId || '未分配'} · v{props.device.policyVersion ?? '—'}</b></div><div><span>命令状态</span><b>{props.command?.status || props.device.commandStatus || '无命令'}</b></div></div><div className="drawer-actions"><b>远程命令</b><button onClick={() => props.onCommand(props.device, 'sync')} disabled={Boolean(props.busy)}><RefreshCw size={16} /> 立即同步 <ArrowRight size={15} /></button><button onClick={() => props.onCommand(props.device, online ? 'lock' : 'unlock')} disabled={Boolean(props.busy)}><LockKeyhole size={16} /> {online ? '远程锁定' : '解除锁定'} <ArrowRight size={15} /></button></div><div className="drawer-note"><AlertCircle size={15} />命令会发送至配置的 API；执行结果取决于设备端响应。</div></aside></div>;
+  return <div className="drawer-layer" onMouseDown={(e) => { if (e.target === e.currentTarget) props.onClose(); }}><aside className="device-drawer"><div className="drawer-top"><span>DEVICE DETAILS</span><button className="icon-button" onClick={props.onClose} aria-label="关闭"><X size={18} /></button></div><div className="drawer-device"><span className={`device-icon big ${online ? 'online' : ''}`}>{props.device.platform?.toLowerCase().includes('ios') ? <Smartphone size={24} /> : <Laptop size={24} />}</span><h2>{props.device.name || props.device.id}</h2><span>{props.device.id}</span><span className={`status-chip ${online ? 'online' : 'offline'}`}><span />{props.device.status || 'unknown'}</span></div><div className="drawer-details"><div><span>平台</span><b>{props.device.platform || 'API 未提供'}</b></div><div><span>最近连接</span><b>{prettyTime(props.device.lastSeen)}</b></div><div><span>策略</span><b>{props.device.policyId || '未分配'} · v{props.device.policyVersion ?? '—'}</b></div><div><span>命令状态</span><b title={props.command?.error || undefined}>{props.command?.status || props.device.commandStatus || '无命令'}{props.command?.error ? ` · ${props.command.error}` : ''}</b></div></div><div className="drawer-actions"><b>远程命令</b><button onClick={() => props.onCommand(props.device, 'sync')} disabled={Boolean(props.busy)}><RefreshCw size={16} /> 立即同步 <ArrowRight size={15} /></button><button onClick={() => props.onCommand(props.device, 'lock')} disabled={Boolean(props.busy)}><LockKeyhole size={16} /> 远程锁定 <ArrowRight size={15} /></button><button onClick={() => props.onCommand(props.device, 'unlock')} disabled={Boolean(props.busy)}><LockKeyhole size={16} /> 解除锁定 <ArrowRight size={15} /></button></div><div className="drawer-note"><AlertCircle size={15} />命令会发送至配置的 API；执行结果取决于设备端响应。</div></aside></div>;
 }
 
 function PolicyModal(props: { name: string; setName: (v: string) => void; description: string; setDescription: (v: string) => void; busy: boolean; onClose: () => void; onSubmit: (e: SubmitEvent<HTMLFormElement>) => void }) {
@@ -408,7 +433,13 @@ function PolicyModal(props: { name: string; setName: (v: string) => void; descri
 }
 
 function SettingsModal(props: { value: string; setValue: (value: string) => void; onClose: () => void; onSubmit: (e: SubmitEvent<HTMLFormElement>) => void }) {
-  return <Modal title="API 连接设置" subtitle="输入控制服务的 Base URL，路径需包含协议与主机名。" onClose={props.onClose}><form className="modal-form" onSubmit={props.onSubmit}><label>API Base URL<input autoFocus type="text" required placeholder="https://api.example.com 或 /api/v1" value={props.value} onChange={(e) => props.setValue(e.target.value)} /><small>可填写服务根地址、/api 或 /api/v1；控制台会自动补齐 /api/v1。</small></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={props.onClose}>取消</button><button className="primary-button"><Check size={16} /> 保存地址</button></div></form></Modal>;
+  return <Modal title="API 连接设置" subtitle="输入控制服务的 HTTP 或 HTTPS Base URL。" onClose={props.onClose}><form className="modal-form" onSubmit={props.onSubmit}><label>API Base URL<input autoFocus type="text" required placeholder="https://api.example.com" value={props.value} onChange={(e) => props.setValue(e.target.value)} /><small>仅支持包含协议与主机名的绝对地址；控制台会自动补齐 /api/v1。</small></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={props.onClose}>取消</button><button className="primary-button"><Check size={16} /> 保存地址</button></div></form></Modal>;
+}
+
+function PairingCodeModal(props: { code: string; expiresIn: number; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() { try { await navigator.clipboard.writeText(props.code); setCopied(true); } catch { setCopied(false); } }
+  return <Modal title="设备配对码" subtitle={`请在 ${Math.round(props.expiresIn / 60)} 分钟内完成配对。`} onClose={props.onClose}><div className="pairing-code"><strong>{props.code}</strong><button className="secondary-button" onClick={() => void copy()}>{copied ? '已复制' : '复制配对码'}</button></div></Modal>;
 }
 
 function Modal(props: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) {

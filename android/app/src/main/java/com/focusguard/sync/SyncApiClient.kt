@@ -128,6 +128,7 @@ class SyncApiClient(
         .put("zoneId", row.zoneId)
         .put("deviceForegroundMillis", row.deviceForegroundMillis)
         .put("appForeground", JSONObject(row.appForegroundJson))
+        .put("app_foreground", JSONObject(row.appForegroundJson))
         .put("appLaunches", JSONObject(row.appLaunchesJson))
         .put("updatedAtMillis", row.updatedAtMillis)
 
@@ -137,6 +138,7 @@ class SyncApiClient(
         val expires = when {
             has("expiresAtMillis") -> optLong("expiresAtMillis")
             has("expiresAt") -> parseExpiry(opt("expiresAt"))
+            has("expires_at") -> parseExpiry(opt("expires_at"))
             else -> null
         }
         val payload = optJSONObject("payload") ?: optString("payload_json").takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject()

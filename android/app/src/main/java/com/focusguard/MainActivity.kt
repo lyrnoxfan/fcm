@@ -37,6 +37,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.focusguard.usage.UsageRepository
 import com.focusguard.sync.SyncScheduler
+import com.focusguard.sync.SyncCoordinator
+import com.focusguard.sync.SyncState
 import com.focusguard.core.PolicyConfig
 import com.focusguard.core.UsageLimitRule
 import com.focusguard.core.UsagePeriod
@@ -68,6 +70,10 @@ class MainActivity : ComponentActivity() {
                 val devicePeriodInputs = remember { mutableStateMapOf(UsagePeriod.WEEK to "", UsagePeriod.MONTH to "") }
                 var refreshKey by remember { mutableStateOf(0) }
                 var accessibilityEnabled by remember { mutableStateOf(isPolicyServiceEnabled()) }
+                 var syncBaseUrl by remember { mutableStateOf("") }
+                 var pairingCode by remember { mutableStateOf("") }
+                 var syncBusy by remember { mutableStateOf(false) }
+                 var syncState by remember { mutableStateOf<SyncState?>(null) }
                 val scope = rememberCoroutineScope()
                 DisposableEffect(this) {
                     val observer = LifecycleEventObserver { _, event ->
@@ -124,6 +130,24 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Text("FocusGuard", style = MaterialTheme.typography.headlineMedium)
                         Text("本机使用统计 · ${ZoneId.systemDefault().id}", style = MaterialTheme.typography.bodyMedium)
+                         Text("设备同步", style = MaterialTheme.typography.titleMedium)
+                         OutlinedTextField(value = syncBaseUrl, onValueChange = { syncBaseUrl = it }, label = { Text("API 地址（HTTPS）") }, singleLine = true)
+                         OutlinedTextField(value = pairingCode, onValueChange = { pairingCode = it }, label = { Text("一次性配对码") }, singleLine = true)
+                         Button(enabled = !syncBusy && syncBaseUrl.isNotBlank() && pairingCode.isNotBlank(), onClick = {
+                             scope.launch {
+                                 syncBusy = true
+                                 try {
+                                     SyncCoordinator(this@MainActivity).register(pairingCode.trim(), syncBaseUrl.trim())
+                                     pairingCode = ""
+                                     message = "设备已配对，令牌已保存到 Android Keystore。"
+                                     syncState = SyncCoordinator(this@MainActivity).sync(accessibilityEnabled = accessibilityEnabled)
+                                     SyncScheduler.requestNow(this@MainActivity)
+                                 } catch (error: Exception) {
+                                     message = "设备配对失败：${error.localizedMessage ?: error.javaClass.simpleName}"
+                                 } finally { syncBusy = false }
+                             }
+                         }) { Text(if (syncBusy) "配对中…" else "配对设备") }
+                         syncState?.let { Text("同步状态：${it::class.simpleName}", style = MaterialTheme.typography.bodySmall) }
                         if (!hasPermission) {
                             Text("需要你主动授予“使用情况访问权限”才能读取前台应用时段。不会读取聊天、键盘、通知或屏幕内容。")
                             Button(onClick = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }) {

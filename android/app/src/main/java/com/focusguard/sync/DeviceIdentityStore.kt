@@ -48,6 +48,11 @@ class DeviceIdentityStore(private val context: Context) {
         return generated
     }
 
+    suspend fun setDeviceId(deviceId: String) {
+        require(deviceId.isNotBlank()) { "device id must not be blank" }
+        appContext.deviceIdentityDataStore.edit { prefs -> prefs[DEVICE_ID] = encrypt(deviceId) }
+    }
+
     suspend fun setDeviceToken(token: String?) {
         appContext.deviceIdentityDataStore.edit { prefs ->
             if (token.isNullOrBlank()) prefs.remove(DEVICE_TOKEN) else prefs[DEVICE_TOKEN] = encrypt(token)

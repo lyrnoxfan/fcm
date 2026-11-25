@@ -39,6 +39,8 @@ class SyncCoordinator(context: Context) {
         val configured = settings.settings.first()
         val deviceId = identity.getOrCreateDeviceId()
         val registration = SyncApiClient(configured.baseUrl).register(pairingCode, deviceId, BuildConfig.VERSION_NAME)
+        // Pairing creates the server-side device identity; persist both returned values.
+        identity.setDeviceId(registration.deviceId)
         identity.setDeviceToken(registration.deviceToken)
         settings.setPairingCode(null)
         return registration

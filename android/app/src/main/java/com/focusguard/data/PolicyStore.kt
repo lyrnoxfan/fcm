@@ -25,6 +25,7 @@ import org.json.JSONObject
 data class PolicyEntity(
     @PrimaryKey val id: Int = 1,
     val version: Long,
+    val serverVersion: Long,
     val configJson: String,
     val updatedAtMillis: Long,
 )
@@ -53,18 +54,20 @@ class PolicyStore(private val dao: PolicyDao) {
         dao.get()?.configJson?.let(PolicyCodec::decode) ?: PolicyConfig()
     }.getOrElse { PolicyConfig() }
 
-    suspend fun version(): Long = dao.get()?.version ?: 0L
+    /** Last server policy version used for conditional sync. Local edits do not advance it. */
+    suspend fun version(): Long = dao.get()?.serverVersion ?: 0L
 
     suspend fun save(config: PolicyConfig, nowMillis: Long = System.currentTimeMillis()): Long {
-        val version = (dao.get()?.version ?: 0L) + 1L
-        dao.save(PolicyEntity(version = version, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
+        val current = dao.get()
+        val version = (current?.version ?: 0L) + 1L
+        dao.save(PolicyEntity(version = version, serverVersion = current?.serverVersion ?: 0L, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
         return version
     }
 
     suspend fun saveRemote(config: PolicyConfig, version: Long, nowMillis: Long = System.currentTimeMillis()): Boolean {
-        val current = dao.get()?.version ?: 0L
-        if (version <= current) return false
-        dao.save(PolicyEntity(version = version, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
+        val current = dao.get()
+        if (version <= (current?.serverVersion ?: 0L)) return false
+        dao.save(PolicyEntity(version = (current?.version ?: 0L) + 1L, serverVersion = version, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
         return true
     }
 }

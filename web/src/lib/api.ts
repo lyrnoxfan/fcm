@@ -18,6 +18,7 @@ export type Policy = {
   version?: string | number;
   deviceCount?: number;
   rules?: unknown;
+  deviceId?: string;
 };
 
 export type Command = {
@@ -45,21 +46,38 @@ export type ApiSession = { token?: string; access_token?: string; user?: { name?
 const configKey = 'focusguard.api.config';
 
 export const API_PATHS = {
-  register: '/auth/register', login: '/auth/login', session: '/auth/session',
+  register: '/auth/register', login: '/auth/login', session: '/auth/session', logout: '/auth/logout',
   devices: '/devices', pairingCodes: '/devices/pairing-codes', policies: '/policies', usage: '/usage',
 } as const;
 
 export function readConfig(): ApiConfig {
-  if (typeof window === 'undefined') return { baseUrl: '', token: '' };
+  const empty: ApiConfig = { baseUrl: '', token: '' };
+  if (typeof window === 'undefined') return empty;
   try {
-    const parsed = JSON.parse(localStorage.getItem(configKey) || '{}') as Partial<ApiConfig>;
-    return { baseUrl: parsed.baseUrl || '', token: parsed.token || '' };
-  } catch { return { baseUrl: '', token: '' }; }
+    const raw = localStorage.getItem(configKey);
+    if (!raw) return empty;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return empty;
+    const value = parsed as Record<string, unknown>;
+    return {
+      baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl.trim() : '',
+      token: typeof value.token === 'string' ? value.token.trim() : '',
+    };
+  } catch { return empty; }
 }
 
 export function saveConfig(config: ApiConfig) { if (typeof window !== 'undefined') localStorage.setItem(configKey, JSON.stringify(config)); }
 export function clearConfig() { if (typeof window !== 'undefined') localStorage.removeItem(configKey); }
-export function normalizeBaseUrl(value: string) { return value.trim().replace(/\/+$/, ''); }
+export function normalizeBaseUrl(value: string) {
+  const candidate = typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
+  if (!candidate) return '';
+  let parsed: URL;
+  try { parsed = new URL(candidate); } catch { throw new Error('API Base URL 必须包含 http:// 或 https:// 协议和有效主机名。'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error('API Base URL 仅支持不含凭据的 HTTP 或 HTTPS 地址。');
+  }
+  return candidate;
+}
 
 /** Accept an origin, /api, /v1, or /api/v1 without duplicating the prefix. */
 export function apiUrl(baseUrl: string, path: string) {
@@ -123,7 +141,8 @@ export function normalizeDevice(value: unknown): Device {
   const item = record(value);
   const lastSeen = text(item.lastSeen ?? item.last_seen_at ?? item.lastHeartbeat ?? item.last_heartbeat_at ?? item.heartbeat_at);
   const explicitStatus = text(item.status ?? item.connection_status ?? item.state);
-  const online = item.online === true || item.is_online === true || (lastSeen ? Date.now() - new Date(lastSeen).getTime() < 5 * 60_000 : false);
+  const age = lastSeen ? Date.now() - new Date(lastSeen).getTime() : Number.NaN;
+  const online = item.online === true || item.is_online === true || (Number.isFinite(age) && age >= 0 && age < 5 * 60_000);
   return {
     id: text(item.id ?? item.device_id) || 'unknown', name: text(item.name ?? item.device_name) || text(item.id ?? item.device_id) || '未命名设备',
     status: explicitStatus || (online ? 'online' : lastSeen ? 'offline' : 'unknown'), lastSeen,
@@ -140,6 +159,7 @@ export function normalizePolicy(value: unknown): Policy {
   return {
     id: text(item.id ?? item.policy_id) || 'unknown', name: text(item.name ?? item.policy_name) || '未命名策略',
     description: text(item.description ?? item.summary), enabled, version: text(item.version ?? item.policy_version), rules,
+    deviceId: text(item.deviceId ?? item.device_id),
     deviceCount: typeof item.deviceCount === 'number' ? item.deviceCount : typeof item.device_count === 'number' ? item.device_count : undefined,
   };
 }

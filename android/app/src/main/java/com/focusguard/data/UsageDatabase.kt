@@ -82,7 +82,7 @@ interface UsageDao {
     suspend fun latestDaily(): List<UsageDailyEntity>
 }
 
-@Database(entities = [UsageEventEntity::class, UsageDailyEntity::class, PolicyEntity::class, SyncCommandEntity::class], version = 3, exportSchema = false)
+@Database(entities = [UsageEventEntity::class, UsageDailyEntity::class, PolicyEntity::class, SyncCommandEntity::class], version = 4, exportSchema = false)
 abstract class UsageDatabase : RoomDatabase() {
     abstract fun usageDao(): UsageDao
     abstract fun policyDao(): PolicyDao
@@ -96,7 +96,7 @@ abstract class UsageDatabase : RoomDatabase() {
                 context.applicationContext,
                 UsageDatabase::class.java,
                 "focusguard-usage.db",
-            ).addMigrations(PolicyDatabaseMigration, SyncDatabaseMigration).build().also { instance = it }
+            ).addMigrations(PolicyDatabaseMigration, SyncDatabaseMigration, PolicyServerVersionMigration).build().also { instance = it }
         }
     }
 }
