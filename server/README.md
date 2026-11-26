@@ -19,6 +19,14 @@ no npm dependencies. The web console is static files served by nginx.
 /etc/systemd/system/focusguard.service
 ```
 
+## Ports
+
+Mainland-China VPS rule: no web service on 443 or 80 (both get reset on
+some exits). Both domains serve HTTPS on **8443** (SNI vhosts share one
+cert); there is no port-80 listener at all. Clients must include the port:
+`https://api-fcm.lyrnox.com:8443`, `https://fcm.lyrnox.com:8443`.
+Cert renewal is DNS-01, so it needs no HTTP port.
+
 ## First install
 
 1. Node 24: unpack the linux-x64 tarball to `/opt/node24`
