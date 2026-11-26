@@ -29,6 +29,17 @@ cert); there is no port-80 listener at all. Clients must include the port:
 the user's phone still could not reach it, so 8443 is final.
 Cert renewal is DNS-01, so it needs no HTTP port.
 
+## IP + port (no DNS, no TLS)
+
+The phone cannot reliably reach the domains (DNS / 443 reset), so the same
+two services are also served as plain HTTP on the server IP
+(`nginx-ip.conf`): web console on **8080**, API on **8081**
+(`http://113.44.6.95:8080`, `http://113.44.6.95:8081`). Caveat: the Android
+app cannot use these as-is — Android blocks cleartext HTTP by default and
+the app has no cleartext opt-in, and the domain cert does not match a bare
+IP over HTTPS either. An app rebuild with cleartext allowed would be needed
+for the app to use the IP address.
+
 ## First install
 
 1. Node 24: unpack the linux-x64 tarball to `/opt/node24`
