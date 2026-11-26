@@ -15,6 +15,7 @@ from xml.etree import ElementTree as ET
 
 APP = 'com.focusguard'
 SERVICE = f'{APP}/.enforcement.PolicyAccessibilityService'
+BLOCKED = f'{APP}/.enforcement.BlockedActivity'
 ROOT = Path(os.environ['RUNNER_TEMP']) / 'focusguard-smoke'
 BASE = 'https://127.0.0.1:18787'
 TLS = ssl.create_default_context(cafile=str(ROOT / 'ca.pem'))
@@ -186,10 +187,16 @@ def pair(code):
     tap(wait_text('配对设备'))
 
 
+def lock_activity_resumed():
+    resumed = current().replace(f'{APP}/{APP}.enforcement.', f'{APP}/.enforcement.')
+    return f'{BLOCKED} ' in resumed
+
+
 def locked_ui():
-    wait_text('设备已被锁定', 40)
-    labels = [n.get('text') for n in nodes() if n.get('package') == APP and n.get('text')]
-    assert labels == ['设备已被锁定'], f'Unexpected lock labels: {labels}'
+    # `uiautomator dump` temporarily disconnects other accessibility services.
+    # Observe foreground state without changing the service being tested.
+    wait_for(lock_activity_resumed, 'restriction activity visibly resumed', 40)
+
 
 
 def launch_ordinary_app():
@@ -240,9 +247,10 @@ def scenarios():
     wait_for(lambda: active(ordinary), 'ordinary app is available before lock')
     command('lock')
     locked_ui()
-    key('KEYCODE_BACK'); locked_ui()
+    key('KEYCODE_BACK')
+    assert lock_activity_resumed(), 'Back dismissed the restriction activity'
     key('KEYCODE_HOME'); launch_ordinary_app(); locked_ui()
-    print('PASS: real remote lock, normal app surfaced restriction, only requested text present, Back did not dismiss')
+    print('PASS: real remote lock opened restriction activity; Back kept it open (visible text not inspected by this probe).')
 
     # Removing the fixture tunnel makes only the backend unavailable, not the radio.
     adb('reverse', '--remove', 'tcp:18787')
@@ -346,7 +354,6 @@ with (ROOT / 'worker.log').open('w') as log:
         scenarios()
     except Exception:
         print('Foreground:', current(), flush=True)
-        print('UI labels:', [n.get('text') for n in nodes() if n.get('text')], flush=True)
         service_state = adb('shell', 'dumpsys', 'accessibility', check=False)
         sections = [line.strip() for line in service_state.splitlines()
                     if 'boundServices' in line or 'bindingServices' in line or 'enabledServices' in line
