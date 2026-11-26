@@ -134,8 +134,23 @@ def onboarding():
     grants = [n for n in nodes() if n.get('text') == '授权']
     tap(grants[2])
     wait_for(lambda: any('permissioncontroller' in (n.get('package') or '') for n in nodes()), 'system notification consent')
-    key('KEYCODE_BACK')
+    # Use the OS deny control and wait for the app dialog before interacting.
+    def deny_notification():
+        for node in nodes():
+            if (node.get('package', '').endswith('permissioncontroller')
+                    and node.get('resource-id', '').endswith(':id/permission_deny_button')
+                    and node.get('enabled') == 'true'):
+                return (node,)
+        return None
+
+    tap(wait_for(deny_notification, 'notification permission deny button')[0])
+    wait_for(lambda: not any(n.get('package', '').endswith('permissioncontroller') for n in nodes()),
+             'notification dialog closed')
     tap(wait_text('稍后设置'))
+    wait_text('设备同步')
+    assert text_is('设置 FocusGuard') is None, 'Skip did not dismiss the app dialog'
+    key('KEYCODE_HOME')
+    wait_for(lambda: not active(APP), 'app moved to background before restart')
     shell('am', 'force-stop', APP)
     launch_main()
     wait_text('设备同步')
