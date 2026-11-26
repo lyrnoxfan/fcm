@@ -241,7 +241,7 @@ def scenarios():
     try:
         wait_for(lambda: len(connected_heartbeats) > heartbeat_count,
                  'fresh heartbeat reports Accessibility service connected after force-stop and reopen', 60)
-        print('PASS: service reconnected after force-stop and reopen')
+        print('PASS: service stayed connected after ordinary background process restart')
     except AssertionError:
         force_stop_reconnected = False
         print('FAIL: Accessibility did not reconnect after force-stop and reopen; enabled setting:',

@@ -20,6 +20,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -34,10 +35,22 @@ class PolicyAccessibilityService : AccessibilityService() {
     private var sync: Job? = null
     private var policyObserver: Job? = null
     private var lastLaunchAt = 0L
+    private var reconnectRecoveryUntil = 0L
 
     private val reevaluate = object : Runnable {
         override fun run() {
             foregroundPackage?.takeIf { evaluation?.isActive != true }?.let(::evaluatePackage)
+            if (foregroundPackage == null || android.os.SystemClock.elapsedRealtime() < reconnectRecoveryUntil) scope.launch(Dispatchers.IO) {
+                val recovered = runCatching { repository.mostRecentForegroundPackage() }.getOrNull()
+                if (recovered != null) withContext(Dispatchers.Main.immediate) {
+                    if (recovered != foregroundPackage) {
+                        lastLaunchAt = 0L
+                        foregroundPackage = recovered
+                        android.util.Log.i("FocusGuard", "Recovered foreground package after service reconnect")
+                        evaluatePackage(recovered)
+                    }
+                }
+            }
             if (sync?.isActive != true) sync = scope.launch(Dispatchers.IO) {
                 runCatching { SyncCoordinator(this@PolicyAccessibilityService).sync(accessibilityEnabled = true) }
             }
@@ -49,6 +62,9 @@ class PolicyAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         activeInstance = this
         _connection.value = true
+        // Do not trust a package cached before a disconnect: Android may not replay the resumed window event.
+        foregroundPackage = null
+        reconnectRecoveryUntil = android.os.SystemClock.elapsedRealtime() + 30_000L
         android.util.Log.i("FocusGuard", "Accessibility service connected")
         policyObserver?.cancel()
         policyObserver = scope.launch {

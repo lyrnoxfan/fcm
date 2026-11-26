@@ -39,6 +39,26 @@ class UsageRepository(context: Context) {
         return appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), appContext.packageName) == AppOpsManager.MODE_ALLOWED
     }
 
+    /** Recover the foreground app if Android reconnects this service without replaying a window event. */
+    fun mostRecentForegroundPackage(): String? {
+        if (!hasUsageAccess()) return null
+        val now = System.currentTimeMillis()
+        val events = appContext.getSystemService(UsageStatsManager::class.java)
+            .queryEvents(now - 6 * 60 * 60 * 1000L, now)
+        val event = UsageEvents.Event()
+        var foreground: String? = null
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            val resumed = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                event.eventType == UsageEvents.Event.ACTIVITY_RESUMED || event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
+            } else {
+                event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND
+            }
+            if (resumed) foreground = event.packageName
+        }
+        return foreground
+    }
+
     fun usageAccessSettingsIntent(): Intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
     fun dailyRows(from: String, through: String): Flow<List<UsageDailyEntity>> = database.usageDao().dailyBetween(from, through)
 

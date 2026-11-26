@@ -413,7 +413,7 @@ private fun PermissionCard(
         AlertDialog(
             onDismissRequest = { showBackgroundHelp = false },
             title = { Text("后台运行与重启") },
-            text = { Text("解锁 Android 且系统重新连接无障碍服务后，FocusGuard 才能继续执行本地规则。部分手机有自启动或后台活动开关；仅在遇到掉线时，按需到系统设置检查。无需开启悬浮窗或锁屏显示。系统锁屏、控制栏、紧急呼叫和授权撤销仍可用。") },
+            text = { Text("解锁 Android 且系统重新连接无障碍服务后，FocusGuard 才能继续执行本地规则。部分手机提供自启动、后台弹出或锁屏显示开关，可按需在系统设置开启，名称和位置因厂商而异；这些开关不能替代无障碍授权，也不能阻止强行停止、撤销授权或使用系统控制。应用不需要悬浮窗权限。") },
             confirmButton = { TextButton(onClick = { showBackgroundHelp = false }) { Text("知道了") } },
         )
     }
