@@ -1,0 +1,40 @@
+name: FocusGuard isolated Android smoke
+on:
+  push:
+    branches: [fcm/ui-permissions-unbinding]
+    paths: ['android/**', 'backend/**', 'ci/**', '.github/workflows/android-isolated.yml']
+permissions:
+  contents: read
+jobs:
+  device-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Prepare disposable HTTPS backend and Android debug APK
+        run: bash ci/android-smoke-prepare.sh
+      - name: Run on an isolated Android 15 emulator
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          emulator-boot-timeout: 300
+          script: python3 -u ci/android-smoke.py
