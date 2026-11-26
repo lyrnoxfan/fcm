@@ -89,12 +89,27 @@ class BlockedActivity : ComponentActivity() {
         updateRestriction(intent)
     }
 
-    override fun onResume() { super.onResume(); isResumed = true }
-    override fun onPause() { isResumed = false; super.onPause() }
+    override fun onResume() {
+        super.onResume()
+        resumedInstance = this
+    }
+
+    override fun onPause() {
+        if (resumedInstance === this) resumedInstance = null
+        super.onPause()
+    }
 
     companion object {
-        var isResumed = false
-            private set
+        @Volatile private var resumedInstance: BlockedActivity? = null
+        val isResumed: Boolean get() = resumedInstance != null
+
+        /** Let Android's essential apps (such as the dialer and Settings) surface above the lock. */
+        fun dismissForAllowedForeground() {
+            val activity = resumedInstance ?: return
+            activity.runOnUiThread {
+                if (resumedInstance === activity && !activity.isFinishing) activity.finish()
+            }
+        }
         const val EXTRA_PACKAGE_NAME = "focusguard.package"
         const val EXTRA_REASON = "focusguard.reason"
         const val EXTRA_USED_MILLIS = "focusguard.used"

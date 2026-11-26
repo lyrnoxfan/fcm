@@ -102,7 +102,18 @@ class PolicyAccessibilityService : AccessibilityService() {
                     repository.refreshHistory()
                     PolicyEngine.evaluate(config, repository.snapshotAt(ZonedDateTime.now()), name, exemptions)
                 }
-                if (foregroundPackage != name || !decision.blocked || BlockedActivity.isResumed) return@launch
+                if (foregroundPackage != name) return@launch
+                if (!decision.blocked) {
+                    // A previously shown lock page can remain in front when Android launches an
+                    // exempt system app (for example, the dialer). Remove only the page; the local
+                    // lock latch stays set and enforcement resumes when a restricted app returns.
+                    if (BlockedActivity.isResumed && name != packageName) {
+                        android.util.Log.i("FocusGuard", "Dismissing restriction page for allowed foreground package")
+                        BlockedActivity.dismissForAllowedForeground()
+                    }
+                    return@launch
+                }
+                if (BlockedActivity.isResumed) return@launch
                 if (getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true ||
                     getSystemService(PowerManager::class.java)?.isInteractive != true) return@launch
                 val now = android.os.SystemClock.elapsedRealtime()
