@@ -34,7 +34,10 @@ Cert renewal is DNS-01, so it needs no HTTP port.
 The phone cannot reliably reach the domains (DNS / 443 reset), so the same
 two services are also served as plain HTTP on the server IP
 (`nginx-ip.conf`): web console on **8080**, API on **8081**
-(`http://113.44.6.95:8080`, `http://113.44.6.95:8081`). Caveat: the Android
+(`http://113.44.6.95:8080`, `http://113.44.6.95:8081`). On 2026-11-26 the
+user had both domains' DNS records deleted, so the IP addresses are now the
+only way in; the domain :8443 endpoints (nginx-api.conf / nginx-web.conf)
+stay configured in nginx but no longer resolve. Caveat: the Android
 app cannot use these as-is — Android blocks cleartext HTTP by default and
 the app has no cleartext opt-in, and the domain cert does not match a bare
 IP over HTTPS either. An app rebuild with cleartext allowed would be needed
