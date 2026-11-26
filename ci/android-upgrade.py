@@ -34,7 +34,13 @@ def pair_old_app(code):
     fields_ = smoke.wait_for(lambda: f if len(f := fields()) == 2 else None, 'both old pairing fields')
     smoke.tap(fields_[1]); smoke.shell('input', 'text', code); smoke.key('KEYCODE_BACK')
     smoke.wait_for(lambda: any(smoke.BASE in (n.get('text') or '') for n in fields()), 'legacy endpoint retained')
-    smoke.tap(smoke.wait_text('配对设备'))
+    code_field = fields()[1]
+    print(f'OBSERVED: legacy pairing fields populated; endpoint retained={any(smoke.BASE in (n.get("text") or "") for n in fields())}, code_length={len(code_field.get("text") or "")}', flush=True)
+    button = smoke.wait_text('配对设备')
+    if button.get('enabled') != 'true':
+        raise AssertionError(f'Legacy pairing button disabled; enabled={button.get("enabled")}, field_lengths={[len(n.get("text") or "") for n in fields()]}')
+    smoke.tap(button)
+    print('OBSERVED: tapped legacy pairing button', flush=True)
 
 
 def run():
@@ -52,8 +58,11 @@ def run():
         rows = smoke.api('/api/v1/devices', token=token)
         return rows[0]['id'] if len(rows) == 1 else None
     device = smoke.wait_for(paired, 'legacy app paired', 60)
+    legacy_rows = smoke.api('/api/v1/devices', token=token)
+    assert len(legacy_rows) == 1 and legacy_rows[0]['id'] == device
     heartbeat_path = f'/api/v1/devices/{device}/heartbeat'
     smoke.wait_for(lambda: heartbeat_path in smoke.heartbeat_observations, 'legacy token heartbeat succeeded', 60)
+    print('LEGACY_STATE: ' + __import__('json').dumps({k: legacy_rows[0].get(k) for k in ['id', 'name', 'platform', 'app_version', 'created_at']}, sort_keys=True), flush=True)
     print('PASS: old app paired and authenticated to the legacy backend')
     return token, device, heartbeat_path
 
@@ -76,9 +85,13 @@ try:
         devices = smoke.api('/api/v1/devices', token=token)
         assert len(devices) == 1 and devices[0]['id'] == device, 'upgrade changed or duplicated legacy identity'
         assert len(smoke.registration_observations) == before_register, 'upgrade unexpectedly re-registered device'
+        print('UPGRADED_STATE: ' + __import__('json').dumps({k: devices[0].get(k) for k in ['id', 'name', 'platform', 'app_version', 'created_at']}, sort_keys=True), flush=True)
         print('PASS: in-place debug APK upgrade retained legacy ID and token, authenticated heartbeat and did not re-register')
 except Exception:
     print('Foreground:', smoke.current(), flush=True)
+    print('UI nodes:', [(n.get('class'), (n.get('text') or '')[:80], n.get('clickable'), n.get('enabled'), n.get('bounds')) for n in smoke.nodes()], flush=True)
+    print('Fixture HTTP requests:', smoke.request_observations[-50:], flush=True)
+    print('Android crash logcat:', smoke.adb('logcat', '-d', '-t', '1200', '-s', 'AndroidRuntime').splitlines()[-100:], flush=True)
     print('Old worker:', (ROOT / 'legacy-worker.log').read_text()[-3000:], flush=True)
     print('New worker:', (ROOT / 'upgraded-worker.log').read_text()[-3000:], flush=True)
     raise

@@ -22,6 +22,7 @@ BASE = 'http://127.0.0.1:18787'
 connected_heartbeats = []
 heartbeat_observations = []
 registration_observations = []
+request_observations = []
 
 
 def adb(*args, check=True):
@@ -341,6 +342,7 @@ class FixtureProxy(BaseHTTPRequestHandler):
             upstream.request(self.command, self.path, body=request_body, headers=incoming)
             response = upstream.getresponse()
             data = response.read()
+            request_observations.append((self.command, self.path, response.status))
             if self.command == 'POST' and self.path.endswith('/devices/register'):
                 registration_observations.append(response.status)
             if self.command == 'POST' and self.path.endswith('/heartbeat') and response.status == 200:
