@@ -11,7 +11,9 @@ import com.focusguard.data.PolicyStore
 import com.focusguard.data.SyncCommandEntity
 import com.focusguard.data.UsageDatabase
 import com.focusguard.usage.UsageRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 
 sealed interface SyncState {
     data object NotConfigured : SyncState
@@ -32,7 +34,7 @@ class SyncCoordinator(context: Context) {
     private val settings = SyncSettingsStore(appContext)
     private val policyStore = PolicyStore(database.policyDao())
 
-    suspend fun register(pairingCode: String, baseUrl: String): DeviceRegistration {
+    suspend fun register(pairingCode: String, baseUrl: String): DeviceRegistration = withContext(Dispatchers.IO) {
         settings.setBaseUrl(baseUrl)
         settings.setPairingCode(pairingCode)
         val configured = settings.settings.first()
@@ -42,15 +44,15 @@ class SyncCoordinator(context: Context) {
         identity.setDeviceId(registration.deviceId)
         identity.setDeviceToken(registration.deviceToken)
         settings.setPairingCode(null)
-        return registration
+        registration
     }
 
-    suspend fun sync(usageAccess: Boolean = usage.hasUsageAccess(), accessibilityEnabled: Boolean = false): SyncState {
+    suspend fun sync(usageAccess: Boolean = usage.hasUsageAccess(), accessibilityEnabled: Boolean = false): SyncState = withContext(Dispatchers.IO) {
         val configured = settings.settings.first()
-        if (configured.baseUrl.isBlank()) return SyncState.NotConfigured
+        if (configured.baseUrl.isBlank()) return@withContext SyncState.NotConfigured
         val credentials = identity.credentials.first()
-        if (credentials.deviceToken.isNullOrBlank()) return SyncState.Unpaired
-        if (!isOnline()) return SyncState.Offline
+        if (credentials.deviceToken.isNullOrBlank()) return@withContext SyncState.Unpaired
+        if (!isOnline()) return@withContext SyncState.Offline
         return try {
             val client = SyncApiClient(configured.baseUrl)
             val deviceId = identity.getOrCreateDeviceId()
