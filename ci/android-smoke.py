@@ -209,7 +209,12 @@ def launch_ordinary_app():
                         '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER',
                         '-p', p, check=False).splitlines()
         if component and component[-1].startswith(f'{p}/'):
-            shell('am', 'start', '-W', '-n', component[-1])
+            # Waiting for an intercepted target to become visible (-W) can block
+            # until adb times out. Dispatch the intent and assert foreground
+            # separately, whether this attempt is allowed or intercepted.
+            output = shell('am', 'start', '-n', component[-1])
+            if 'Error:' in output or 'Exception' in output:
+                raise AssertionError(f'Failed to dispatch ordinary app: {output}')
             return p
     raise AssertionError('No ordinary launchable app fixture')
 
@@ -247,6 +252,7 @@ def scenarios():
     wait_for(lambda: active(ordinary), 'ordinary app is available before lock')
     command('lock')
     locked_ui()
+    print('PASS: remote lock opened restriction activity (foreground probe only)', flush=True)
     key('KEYCODE_BACK')
     assert lock_activity_resumed(), 'Back dismissed the restriction activity'
     key('KEYCODE_HOME'); launch_ordinary_app(); locked_ui()
