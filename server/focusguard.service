@@ -1,0 +1,16 @@
+[Unit]
+Description=FocusGuard API (self-hosted)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/fcm
+Environment=PORT=18080
+Environment=DB_PATH=/opt/fcm/focusguard.db
+ExecStart=/opt/node24/bin/node /opt/fcm/server.mjs
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
