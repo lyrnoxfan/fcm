@@ -53,7 +53,7 @@ class SyncCoordinator(context: Context) {
         val credentials = identity.credentials.first()
         if (credentials.deviceToken.isNullOrBlank()) return@withContext SyncState.Unpaired
         if (!isOnline()) return@withContext SyncState.Offline
-        return try {
+        try {
             val client = SyncApiClient(configured.baseUrl)
             val deviceId = identity.getOrCreateDeviceId()
             client.heartbeat(deviceId, credentials.deviceToken, usageAccess, accessibilityEnabled)
