@@ -21,14 +21,13 @@ no npm dependencies. The web console is static files served by nginx.
 
 ## Ports
 
-Mainland-China VPS rule: no web service on 443 or 80 unless specially
-required. fcm IS the special case: the user wants a bare domain with a
-direct connection, which needs 443. So both domains serve HTTPS on **443**
-(primary) and **8443** (fallback, in case 443 is reset on some exit).
-There is no port-80 listener at all. Bare-domain clients use
-`https://api-fcm.lyrnox.com` / `https://fcm.lyrnox.com`; the `:8443`
-variants work identically. Cert renewal is DNS-01, so it needs no HTTP
-port.
+Mainland-China VPS rule: no web service on 443 or 80 (both get reset on
+some exits). Both domains serve HTTPS on **8443** (SNI vhosts share one
+cert); there is no port-80 listener at all. Clients must include the port:
+`https://api-fcm.lyrnox.com:8443`, `https://fcm.lyrnox.com:8443`.
+443 was tried as a special case (bare domain + direct) on 2026-11-26 but
+the user's phone still could not reach it, so 8443 is final.
+Cert renewal is DNS-01, so it needs no HTTP port.
 
 ## First install
 
