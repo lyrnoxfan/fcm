@@ -87,6 +87,9 @@ describe("FocusGuard API", () => {
   it("creates idempotent commands, enforces ownership, and handles device ack", async () => {
     const auth = await (await post("/api/auth/register", { email: "cmd@example.test", password: "password three" })).json() as { token: string };
     const device = await (await post("/api/devices", { name: "Laptop", platform: "linux" }, auth.token)).json() as { device: { id: string }; device_token: string };
+    const emptyQueue = await request(`/api/devices/${device.device.id}/commands`, { headers: { "x-device-token": device.device_token } });
+    expect(emptyQueue.status).toBe(200);
+    expect(await emptyQueue.json()).toEqual({ commands: [] });
     const headers = { authorization: `Bearer ${auth.token}`, "idempotency-key": "same-command" };
     const first = await request("/api/commands", { method: "POST", headers, body: JSON.stringify({ device_id: device.device.id, command: "sync", expires_in: 60 }) }); const command = await first.json() as { id: string; status: string; kind: string }; expect(first.status).toBe(201); expect(command.status).toBe("pending"); expect(command.kind).toBe("sync");
     const second = await request("/api/commands", { method: "POST", headers, body: JSON.stringify({ device_id: device.device.id, command: "sync", expires_in: 60 }) }); expect((await second.json() as { id: string }).id).toBe(command.id);

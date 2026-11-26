@@ -194,8 +194,15 @@ def locked_ui():
 
 def launch_ordinary_app():
     for p in ['com.google.android.calculator', 'com.android.calculator2', 'com.google.android.apps.messaging', 'com.android.messaging', 'com.google.android.contacts', 'com.android.contacts', 'com.android.chrome']:
-        if shell('cmd', 'package', 'path', p).startswith('package:'):
-            shell('monkey', '-p', p, '-c', 'android.intent.category.LAUNCHER', '1')
+        # Package Manager returns a nonzero status for packages absent from this image.
+        installed = adb('shell', 'cmd', 'package', 'path', p, check=False)
+        if not installed.startswith('package:'):
+            continue
+        component = adb('shell', 'cmd', 'package', 'resolve-activity', '--brief',
+                        '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER',
+                        '-p', p, check=False).splitlines()
+        if component and component[-1].startswith(f'{p}/'):
+            shell('am', 'start', '-W', '-n', component[-1])
             return p
     raise AssertionError('No ordinary launchable app fixture')
 
