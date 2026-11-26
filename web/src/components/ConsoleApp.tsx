@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SyntheticEvent, ReactNode } from 'react';
 import {
   Activity, AlertCircle, ArrowRight, Check, ChevronDown, CircleHelp, Clock3, Code2,
-  Copy, Laptop, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Menu, Pencil,
+  Laptop, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Menu, Pencil,
   Plus, RefreshCw, Search, Send, Settings2, Shield, ShieldCheck, Smartphone, Sparkles,
   Terminal, Wifi, X,
 } from 'lucide-react';
@@ -152,8 +152,6 @@ export default function ConsoleApp() {
   const [busyPolicy, setBusyPolicy] = useState<string | null>(null);
   const [policyEditor, setPolicyEditor] = useState<PolicyEditorState | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
-  const [pairingBusy, setPairingBusy] = useState(false);
-  const [pairingCode, setPairingCode] = useState<{ code: string; expiresAt: number } | null>(null);
   const [sessionBusy, setSessionBusy] = useState(false);
 
   const refreshGeneration = useRef(0);
@@ -375,24 +373,6 @@ export default function ConsoleApp() {
     setShowSettings(false);
     setDataStatus('idle');
     notify('success', 'API 地址已保存，将重新验证会话。');
-  }
-
-  async function createPairingCode() {
-    if (pairingBusy) return;
-    setPairingBusy(true);
-    try {
-      const result = await request<{ code?: string; expires_in?: number; expiresIn?: number }>(config, API_PATHS.pairingCodes, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      if (!result.code) throw new Error('配对码响应中没有 code。');
-      const seconds = result.expires_in ?? result.expiresIn ?? 600;
-      setPairingCode({ code: result.code, expiresAt: Date.now() + seconds * 1000 });
-    } catch (error) {
-      notify('error', errorMessage(error, '生成配对码失败。'));
-    } finally {
-      setPairingBusy(false);
-    }
   }
 
   const pollCommand = useCallback(async (deviceId: string, commandId: string, operation: string, generation: number, kind: CommandKind) => {
@@ -622,7 +602,7 @@ export default function ConsoleApp() {
       {notice && <div className={`toast ${notice.kind}`} role="status"><span className="toast-icon">{notice.kind === 'error' ? <AlertCircle size={17} /> : notice.kind === 'success' ? <Check size={17} /> : <Activity size={17} />}</span><span>{notice.text}</span><button className="toast-close" onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div>}
       <div className="content-area">
         {view === 'overview' && <Overview devices={devices} policies={policies} onlineCount={onlineCount} status={dataStatus} loading={loading} dataError={dataError} partialErrors={partialErrors} usage={usage} commands={commands} commandForDevice={commandForDevice} onViewDevices={() => navTo('devices')} onViewPolicies={() => navTo('policies')} onRefresh={() => void refresh()} onSelect={setSelected} onCommand={sendDeviceCommand} busyCommands={busyCommands} />}
-        {view === 'devices' && <DevicesView devices={filteredDevices} total={devices.length} search={search} setSearch={setSearch} status={dataStatus} loading={loading} dataError={dataError} onRefresh={() => void refresh()} onPair={() => void createPairingCode()} pairingBusy={pairingBusy} onSelect={setSelected} onCommand={sendDeviceCommand} busyCommands={busyCommands} commandForDevice={commandForDevice} />}
+        {view === 'devices' && <DevicesView devices={filteredDevices} total={devices.length} search={search} setSearch={setSearch} status={dataStatus} loading={loading} dataError={dataError} onRefresh={() => void refresh()} onSelect={setSelected} onCommand={sendDeviceCommand} busyCommands={busyCommands} commandForDevice={commandForDevice} />}
         {view === 'policies' && <PoliciesView policies={policies} devices={devices} status={dataStatus} loading={loading} dataError={dataError} busyPolicy={busyPolicy} onCreate={() => setPolicyEditor({ mode: 'create' })} onEdit={(policy) => setPolicyEditor({ mode: 'edit', policy })} onToggle={togglePolicy} onAssign={assignPolicy} onRefresh={() => void refresh()} />}
       </div>
       <footer className="footer"><span>FOCUSGUARD CONTROL PLANE <i>·</i> v0.2.0</span><span><CircleHelp size={13} /> {sessionBusy ? '正在验证会话' : `API ${config.baseUrl}`}</span></footer>
@@ -631,7 +611,6 @@ export default function ConsoleApp() {
     {unbindDevice && <UnbindDialog device={unbindDevice} onClose={() => setUnbindDevice(null)} onConfirm={() => confirmUnbind(unbindDevice)} />}
     {policyEditor && <PolicyEditorModal editor={policyEditor} busy={busyPolicy === (policyEditor.policy?.id || 'new')} devices={devices} onClose={() => setPolicyEditor(null)} onSubmit={(values) => void savePolicy(values, policyEditor)} />}
     {showSettings && <SettingsModal value={baseDraft} setValue={setBaseDraft} onClose={() => setShowSettings(false)} onSubmit={saveBaseUrl} />}
-    {pairingCode && <PairingCodeModal code={pairingCode.code} expiresAt={pairingCode.expiresAt} onClose={() => setPairingCode(null)} onError={(message) => notify('error', message)} />}
   </div>;
 }
 
@@ -785,14 +764,12 @@ function DevicesView(props: {
   loading: boolean;
   dataError: string;
   onRefresh: () => void;
-  onPair: () => void;
-  pairingBusy: boolean;
   onSelect: (id: string) => void;
   onCommand: (device: Device, command: CommandKind) => void;
   busyCommands: Record<string, boolean>;
   commandForDevice: (deviceId: string) => CommandState | undefined;
 }) {
-  return <><PageHeading eyebrow="FLEET MANAGEMENT" title="设备" description="查看在线状态、最近心跳、策略版本与远程命令。" action={<div className="heading-actions"><button className="secondary-button" onClick={props.onPair} disabled={props.pairingBusy}>{props.pairingBusy ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />} 生成配对码</button><button className="secondary-button" onClick={props.onRefresh} disabled={props.loading}>{props.loading ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />} 刷新</button></div>} />
+  return <><PageHeading eyebrow="FLEET MANAGEMENT" title="设备" description="查看在线状态、最近心跳、策略版本与远程命令。" action={<div className="heading-actions"><button className="secondary-button" onClick={props.onRefresh} disabled={props.loading}>{props.loading ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />} 刷新</button></div>} />
     {props.dataError && <ErrorBanner message={props.dataError} onRetry={props.onRefresh} />}
     <div className="toolbar"><div className="search-field"><Search size={16} /><input aria-label="搜索设备" placeholder="搜索名称、设备 ID、状态或策略" value={props.search} onChange={(event) => props.setSearch(event.target.value)} /></div><div className="toolbar-meta"><span>{props.status === 'ready' ? `${props.devices.length} / ${props.total} 台设备` : loadingLabel(props.status)}</span></div></div>
     <section className="panel table-panel"><div className="table-head"><span>设备</span><span>连接</span><span>策略</span><span>最近命令</span><span>操作</span></div>{props.status !== 'ready' || props.devices.length === 0 ? <DataState status={props.status} kind="device" onAction={props.onRefresh} /> : <div className="device-list">{props.devices.map((device) => <DeviceRow key={device.id} device={device} command={props.commandForDevice(device.id)} onSelect={props.onSelect} onCommand={props.onCommand} busyCommands={props.busyCommands} />)}</div>}</section>
@@ -852,7 +829,7 @@ function UnbindDialog(props: { device: Device; onClose: () => void; onConfirm: (
   }
   return <dialog ref={dialog} className="modal unbind-dialog" aria-labelledby="unbind-title" onCancel={(event) => { event.preventDefault(); if (!inFlight.current) props.onClose(); }}>
     <h2 id="unbind-title">解绑 {props.device.name || props.device.id}？</h2>
-    <p>旧凭证会立即失效，未完成的命令将过期。设备需用新的配对码重新连接；服务器历史记录和策略本身不会删除。</p>
+    <p>旧凭证会立即失效，未完成的命令将过期。已解绑设备不会自动重新注册；服务器历史记录和策略本身不会删除。</p>
     {error && <p role="alert" className="unbind-error">{error}</p>}
     <div className="unbind-actions"><button type="button" autoFocus className="secondary-button" disabled={busy} onClick={props.onClose}>取消</button><button type="button" className="danger-button" disabled={busy} onClick={() => void confirm()}>{busy ? '正在解绑…' : '确认解绑'}</button></div>
   </dialog>;
@@ -906,27 +883,6 @@ function PolicyEditorModal(props: { editor: PolicyEditorState; devices: Device[]
 
 function SettingsModal(props: { value: string; setValue: (value: string) => void; onClose: () => void; onSubmit: (event: SyntheticEvent<HTMLFormElement>) => void }) {
   return <Modal title="API 连接设置" subtitle="输入控制服务的 HTTP 或 HTTPS Base URL。" onClose={props.onClose}><form className="modal-form" onSubmit={props.onSubmit}><label>API Base URL<input autoFocus type="text" required placeholder="https://api.example.com" value={props.value} onChange={(event) => props.setValue(event.target.value)} /><small>支持 origin、/api、/v1 或 /api/v1；控制台会避免重复拼接路径。</small></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={props.onClose}>取消</button><button className="primary-button"><Check size={16} /> 保存地址</button></div></form></Modal>;
-}
-
-function PairingCodeModal(props: { code: string; expiresAt: number; onClose: () => void; onError: (message: string) => void }) {
-  const [remaining, setRemaining] = useState(() => Math.max(0, Math.ceil((props.expiresAt - Date.now()) / 1000)));
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    const timer = window.setInterval(() => setRemaining(Math.max(0, Math.ceil((props.expiresAt - Date.now()) / 1000))), 1000);
-    return () => window.clearInterval(timer);
-  }, [props.expiresAt]);
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(props.code);
-      setCopied(true);
-    } catch {
-      setCopied(false);
-      props.onError('复制失败，请手动选择配对码。');
-    }
-  }
-  const minutes = Math.floor(remaining / 60);
-  const seconds = String(remaining % 60).padStart(2, '0');
-  return <Modal title="设备配对码" subtitle={remaining ? `请在 ${minutes} 分 ${seconds} 秒内完成配对。此窗口会一直保留，直到你主动关闭。` : '配对码已过期，请关闭后重新生成。'} onClose={props.onClose}><div className="pairing-code"><div className="pairing-code-value" aria-label="设备配对码">{props.code}</div><div className="pairing-code-meta"><span className={remaining ? 'expires-live' : 'expires-dead'}><i />{remaining ? `有效期剩余 ${minutes}:${seconds}` : '已过期'}</span><button className="secondary-button" onClick={() => void copy()} disabled={!remaining}>{copied ? <><Check size={15} /> 已复制</> : <><Copy size={15} /> 复制配对码</>}</button></div><p>在设备端输入此 6 位代码。配对成功后，设备会在下一次刷新中出现在设备列表。</p></div></Modal>;
 }
 
 function Modal(props: { title: string; subtitle: string; onClose: () => void; children: ReactNode; wide?: boolean }) {

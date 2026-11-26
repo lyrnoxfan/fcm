@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import java.nio.charset.StandardCharsets
@@ -65,10 +66,29 @@ class DeviceIdentityStore(private val context: Context) {
         }
     }
 
+    suspend fun pendingRegistrationToken(): String {
+        val prefs = appContext.deviceIdentityDataStore.data.first()
+        decrypt(prefs[PENDING_TOKEN])?.let { return it }
+        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        appContext.deviceIdentityDataStore.edit { it[PENDING_TOKEN] = encrypt(token) }
+        return token
+    }
+
+    suspend fun registrationAllowed(): Boolean = appContext.deviceIdentityDataStore.data.first()[REVOKED] != true
+
+    suspend fun completeRegistration(token: String) {
+        appContext.deviceIdentityDataStore.edit { prefs ->
+            prefs[DEVICE_TOKEN] = encrypt(token)
+            prefs.remove(PENDING_TOKEN)
+        }
+    }
+
     suspend fun clearDeviceRegistration() {
         appContext.deviceIdentityDataStore.edit { prefs ->
             prefs.remove(DEVICE_TOKEN)
-            prefs.remove(DEVICE_ID)
+            prefs.remove(PENDING_TOKEN)
+            prefs[REVOKED] = true
         }
     }
 
@@ -108,6 +128,8 @@ class DeviceIdentityStore(private val context: Context) {
 
     private companion object {
         val DEVICE_ID = stringPreferencesKey("device_id")
+        val PENDING_TOKEN = stringPreferencesKey("pending_registration_token")
+        val REVOKED = booleanPreferencesKey("registration_revoked")
         val DEVICE_TOKEN = stringPreferencesKey("device_token")
         val USER_TOKEN = stringPreferencesKey("user_token")
         const val KEY_ALIAS = "focusguard.device.identity"

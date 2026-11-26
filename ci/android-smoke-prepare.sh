@@ -3,28 +3,15 @@ set -euo pipefail
 : "${RUNNER_TEMP:?This fixture is only for the disposable CI runner}"
 fixture="$RUNNER_TEMP/focusguard-smoke"
 mkdir -p "$fixture"
-openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
-  -subj '/CN=FocusGuard smoke CA' -addext 'basicConstraints=critical,CA:TRUE' \
-  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
-  -keyout "$fixture/ca.key" -out "$fixture/ca.pem" >/dev/null 2>&1
-openssl req -new -newkey rsa:2048 -nodes -subj '/CN=127.0.0.1' \
-  -keyout "$fixture/server.key" -out "$fixture/server.csr" >/dev/null 2>&1
-printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
-  'subjectAltName=IP:127.0.0.1' 'extendedKeyUsage=serverAuth' > "$fixture/leaf.ext"
-openssl x509 -req -in "$fixture/server.csr" -CA "$fixture/ca.pem" -CAkey "$fixture/ca.key" \
-  -CAcreateserial -days 1 -sha256 -extfile "$fixture/leaf.ext" -out "$fixture/server.pem"
-openssl verify -x509_strict -purpose sslserver -CAfile "$fixture/ca.pem" \
-  -verify_ip 127.0.0.1 "$fixture/server.pem"
-# Temporary Debug-only trust of this job's ephemeral CA. No change to the application manifest or trust store in Git.
-test ! -e android/app/src/debug/AndroidManifest.xml
-mkdir -p android/app/src/debug/res/{xml,raw}
-cp "$fixture/ca.pem" android/app/src/debug/res/raw/smoke_ca.pem
-cat > android/app/src/debug/res/xml/smoke_network.xml <<'XML'
-<network-security-config><base-config cleartextTrafficPermitted="false"><trust-anchors><certificates src="@raw/smoke_ca" /></trust-anchors></base-config></network-security-config>
-XML
-cat > android/app/src/debug/AndroidManifest.xml <<'XML'
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:networkSecurityConfig="@xml/smoke_network" /></manifest>
-XML
+# Disposable CI only: route app traffic to the runner via adb reverse. Production
+# remains restricted to 113.44.6.95 and this test does not verify the public host.
+python3 - <<'INNER'
+from pathlib import Path
+p = Path('android/app/src/main/java/com/focusguard/sync/SyncSettingsStore.kt')
+p.write_text(p.read_text().replace('http://113.44.6.95:8081', 'http://127.0.0.1:18787'))
+p = Path('android/app/src/main/res/xml/network_security_config.xml')
+p.write_text(p.read_text().replace('113.44.6.95', '127.0.0.1'))
+INNER
 (cd backend && npm ci)
 cat > "$fixture/wrangler.toml" <<TOML
 name = "focusguard-android-isolated"

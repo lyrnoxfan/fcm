@@ -37,11 +37,9 @@ two services are also served as plain HTTP on the server IP
 (`http://113.44.6.95:8080`, `http://113.44.6.95:8081`). On 2026-11-26 the
 user had both domains' DNS records deleted, so the IP addresses are now the
 only way in; the domain :8443 endpoints (nginx-api.conf / nginx-web.conf)
-stay configured in nginx but no longer resolve. Caveat: the Android
-app cannot use these as-is — Android blocks cleartext HTTP by default and
-the app has no cleartext opt-in, and the domain cert does not match a bare
-IP over HTTPS either. An app rebuild with cleartext allowed would be needed
-for the app to use the IP address.
+stay configured in nginx but no longer resolve. The source now restricts Android cleartext access to that IP and uses the API
+address by default. This requires building and installing the updated app;
+it does not imply the deployed server or any existing release was updated.
 
 ## First install
 
@@ -80,3 +78,18 @@ to incremental sync is still worthwhile.
 Issued on the admin VM with certbot DNS-01 (Cloudflare DNS API) and
 pushed to `/etc/nginx/certs/fcm/` on HW SH; renewed by the weekly
 cert job. Both `api-fcm.lyrnox.com` and `fcm.lyrnox.com` share one cert.
+
+## Automatic Android registration
+
+This version fixes the Android endpoint to http://113.44.6.95:8081 and enables
+cleartext only for that IP. First launch creates a random device ID and token
+and registers without a pairing code. If exactly one user exists that user is
+the primary account. For multiple users configure PRIMARY_USER_ID to the
+intended existing user ID in the server environment before starting; otherwise
+registration returns 503 rather than choosing an account. Existing devices and
+tokens are retained. Revoked device identities cannot enroll again.
+
+WARNING: unauthenticated enrollment allows strangers to add devices, and HTTP
+exposes account and device tokens and permits network interception or tampering.
+Restrict access to the API with a trusted VPN or firewall. HTTP and an IP-only
+exception do not authenticate the server or encrypt traffic.

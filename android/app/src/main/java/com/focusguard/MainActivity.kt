@@ -40,6 +40,7 @@ import com.focusguard.usage.UsageRepository
 import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -91,7 +92,6 @@ class MainActivity : ComponentActivity() {
                 var refreshKey by remember { mutableStateOf(0) }
                 var accessibilityEnabled by remember { mutableStateOf(isPolicyServiceEnabled()) }
                 var syncBaseUrl by remember { mutableStateOf("") }
-                var pairingCode by remember { mutableStateOf("") }
                 var syncBusy by remember { mutableStateOf(false) }
                 var syncState by remember { mutableStateOf<SyncState?>(null) }
                  var foregroundSyncEnabled by remember { mutableStateOf(false) }
@@ -136,6 +136,14 @@ class MainActivity : ComponentActivity() {
                         }
                         paired = stillPaired
                     }
+                }
+
+                LaunchedEffect(Unit) {
+                    SyncScheduler.requestNow(this@MainActivity)
+                    if (syncSettings.settings.first().foregroundSyncEnabled) {
+                        SyncScheduler.enableForegroundSync(this@MainActivity)
+                    }
+                    syncState = SyncCoordinator(this@MainActivity).sync(accessibilityEnabled = PolicyAccessibilityService.connected)
                 }
 
                 LaunchedEffect(Unit) {
@@ -215,7 +223,6 @@ class MainActivity : ComponentActivity() {
                     weeklyLimitMinutes = devicePeriodInputs[UsagePeriod.WEEK].orEmpty(),
                     monthlyLimitMinutes = devicePeriodInputs[UsagePeriod.MONTH].orEmpty(),
                     syncBaseUrl = syncBaseUrl,
-                    pairingCode = pairingCode,
                     paired = paired,
                     lastSyncAtMillis = lastSyncAtMillis,
                     lastSyncError = lastSyncError,
@@ -229,27 +236,6 @@ class MainActivity : ComponentActivity() {
                         }?.limitMillis?.div(60_000)?.toString().orEmpty()
                     },
                     appSaving = { packageName -> savingAppPackage == packageName },
-                    onSyncBaseUrlChanged = { syncBaseUrl = it },
-                    onPairingCodeChanged = { pairingCode = it },
-                    onPairDevice = {
-                        scope.launch {
-                            syncBusy = true
-                            try {
-                                val coordinator = SyncCoordinator(this@MainActivity)
-                                coordinator.register(pairingCode.trim(), syncBaseUrl.trim())
-                                pairingCode = ""
-                                message = "设备已配对，令牌已保存到 Android Keystore。"
-                                syncState = coordinator.sync(accessibilityEnabled = PolicyAccessibilityService.connected)
-                                foregroundSyncEnabled = true
-                                 syncSettings.setForegroundSyncEnabled(true)
-                                 SyncScheduler.requestNow(this@MainActivity)
-                            } catch (error: Exception) {
-                                message = "设备配对失败：${error.localizedMessage ?: error.javaClass.simpleName}"
-                            } finally {
-                                syncBusy = false
-                            }
-                        }
-                    },
                     onForegroundSyncChanged = { enabled ->
                          foregroundSyncEnabled = enabled
                          scope.launch { syncSettings.setForegroundSyncEnabled(enabled) }
@@ -259,7 +245,6 @@ class MainActivity : ComponentActivity() {
                         scope.launch {
                             syncBusy = true
                             try {
-                                syncSettings.setBaseUrl(syncBaseUrl.trim())
                                 syncState = SyncCoordinator(this@MainActivity)
                                     .sync(accessibilityEnabled = PolicyAccessibilityService.connected)
                                 message = syncState?.toUserMessage()

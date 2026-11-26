@@ -13,7 +13,6 @@ private val Context.syncSettingsDataStore by preferencesDataStore(name = "focusg
 
 data class SyncSettings(
     val baseUrl: String,
-    val pairingCode: String?,
     val lastSyncAtMillis: Long?,
     val lastSyncError: String?,
     val foregroundSyncEnabled: Boolean,
@@ -22,25 +21,11 @@ data class SyncSettings(
 class SyncSettingsStore(private val context: Context) {
     val settings: Flow<SyncSettings> = context.applicationContext.syncSettingsDataStore.data.map { prefs ->
         SyncSettings(
-            baseUrl = prefs[BASE_URL].orEmpty(),
-            pairingCode = prefs[PAIRING_CODE],
+            baseUrl = "http://113.44.6.95:8081",
             lastSyncAtMillis = prefs[LAST_SYNC_AT_MILLIS],
             lastSyncError = prefs[LAST_SYNC_ERROR],
-             foregroundSyncEnabled = prefs[FOREGROUND_SYNC_ENABLED] ?: false,
+             foregroundSyncEnabled = prefs[FOREGROUND_SYNC_ENABLED] ?: true,
         )
-    }
-
-    suspend fun setBaseUrl(value: String) {
-        context.applicationContext.syncSettingsDataStore.edit { prefs ->
-            val normalized = value.trim().trimEnd('/')
-            if (normalized.isBlank()) prefs.remove(BASE_URL) else prefs[BASE_URL] = normalized
-        }
-    }
-
-    suspend fun setPairingCode(value: String?) {
-        context.applicationContext.syncSettingsDataStore.edit { prefs ->
-            if (value.isNullOrBlank()) prefs.remove(PAIRING_CODE) else prefs[PAIRING_CODE] = value.trim()
-        }
     }
 
     suspend fun setForegroundSyncEnabled(value: Boolean) {
@@ -55,8 +40,6 @@ class SyncSettingsStore(private val context: Context) {
     }
 
     private companion object {
-        val BASE_URL = stringPreferencesKey("base_url")
-        val PAIRING_CODE = stringPreferencesKey("pairing_code")
         val LAST_SYNC_AT_MILLIS = longPreferencesKey("last_sync_at_millis")
         val LAST_SYNC_ERROR = stringPreferencesKey("last_sync_error")
         val FOREGROUND_SYNC_ENABLED = booleanPreferencesKey("foreground_sync_enabled")

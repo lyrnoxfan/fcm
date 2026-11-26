@@ -19,7 +19,7 @@ Configure the API Base URL in the sign-in screen. The console automatically targ
 - `GET /api/v1/auth/session` validates the stored session.
 - `GET /api/v1/devices` reads only the authenticated user’s devices.
 - `DELETE /api/v1/devices/{id}` unbinds an owned device after confirmation; its token is revoked while retained history is not physically deleted.
-- `POST /api/v1/devices/pairing-codes` creates a one-time code for Android pairing.
+- Android registers automatically via `POST /api/v1/devices/register`; the account is selected by `PRIMARY_USER_ID` or, if exactly one exists, automatically.
 - `POST /api/v1/devices/{id}/commands` queues `sync`, `lock`, or `unlock`; `GET /api/v1/devices/{id}/commands/{commandId}` reads execution state.
 - `GET/POST /api/v1/policies` and `PATCH /api/v1/policies/{id}` manage versioned policies; `POST /api/v1/policies/{id}/assign` binds one to a device.
 - `GET /api/v1/usage?device_id=...` reads usage rows available to the authenticated owner.

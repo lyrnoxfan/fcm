@@ -54,7 +54,6 @@ export const API_PATHS = {
   session: '/auth/session',
   logout: '/auth/logout',
   devices: '/devices',
-  pairingCodes: '/devices/pairing-codes',
   policies: '/policies',
   usage: '/usage',
   commands: '/commands',

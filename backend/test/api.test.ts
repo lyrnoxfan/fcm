@@ -32,12 +32,28 @@ describe("FocusGuard API", () => {
     const bad = await post("/api/auth/login", { email: "a@example.test", password: "wrong password" }); expect(bad.status).toBe(401);
   });
 
-  it("isolates users and supports one-time device pairing and heartbeat", async () => {
+  it("registers automatically once, handles retries, and rejects revoked identity", async () => {
+    const auth = await (await post("/api/auth/register", { email: "auto@example.test", password: "correct horse battery" })).json() as {token: string; user: {id: string}};
+    const device_id = crypto.randomUUID();
+    const token = "a".repeat(43);
+    const reg = {device_id, token, name: "Phone", platform: "android"};
+    const first = await post("/api/devices/register", reg); expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({device: {id: device_id, user_id: auth.user.id}, device_token: token});
+    expect((await post("/api/devices/register", reg)).status).toBe(200);
+    expect((await post("/api/devices/register", {...reg, token: "b".repeat(43)})).status).toBe(409);
+    expect((await request(`/api/devices/${device_id}/heartbeat`, {method: "POST", headers: {"x-device-token": token}, body: "{}"})).status).toBe(200);
+    expect((await request(`/api/devices/${device_id}`, {method: "DELETE", headers: {authorization: `Bearer ${auth.token}`}})).status).toBe(200);
+    expect((await post("/api/devices/register", reg)).status).toBe(409);
+    await post("/api/auth/register", {email: "second@example.test", password: "correct horse battery"});
+    expect((await post("/api/devices/register", {...reg, device_id: crypto.randomUUID()})).status).toBe(503);
+    expect((await request(`/api/devices/${device_id}/heartbeat`, {method: "POST", headers: {"x-device-token": token}, body: "{}"})).status).toBe(401);
+  });
+
+  it("isolates users and supports device heartbeat", async () => {
     const a = await (await post("/api/auth/register", { email: "owner@example.test", password: "password one" })).json() as { token: string };
     const b = await (await post("/api/auth/register", { email: "other@example.test", password: "password two" })).json() as { token: string };
-    const code = await (await post("/api/devices/pairing-codes", {}, a.token)).json() as { code: string };
-    const paired = await (await post("/api/devices/pair", { code: code.code, name: "Phone", platform: "android" })).json() as { device: { id: string }; device_token: string };
-    expect(paired.device_token).toEqual(expect.any(String)); expect((await post("/api/devices/pair", { code: code.code, name: "Again", platform: "android" })).status).toBe(400);
+    const paired = await (await post("/api/devices", { name: "Phone", platform: "android" }, a.token)).json() as { device: { id: string }; device_token: string };
+    expect(paired.device_token).toEqual(expect.any(String));
     const heartbeat = await request(`/api/devices/${paired.device.id}/heartbeat`, { method: "POST", headers: { "x-device-token": paired.device_token }, body: JSON.stringify({ usageAccessGranted: true, accessibilityEnabled: false }) });
     expect(heartbeat.status).toBe(200);
     const ownerDevices = await (await request("/api/devices", { headers: { authorization: `Bearer ${a.token}` } })).json() as Array<{ id: string; usage_access_granted: number; accessibility_enabled: number; last_sync_at: string }>;
@@ -48,11 +64,9 @@ describe("FocusGuard API", () => {
   it("unbinds only an owned device, revokes credentials and preserves other devices", async () => {
     const owner = await (await post("/api/auth/register", { email: "unbind@example.test", password: "password one" })).json() as { token: string };
     const other = await (await post("/api/auth/register", { email: "outside@example.test", password: "password two" })).json() as { token: string };
-    const makeCode = async () => (await (await post("/api/devices/pairing-codes", {}, owner.token)).json() as { code: string }).code;
-    const pair = async (code: string) => await (await post("/api/devices/pair", { code, name: "Test phone", platform: "android" })).json() as { device: { id: string }; device_token: string };
-    const code = await makeCode();
-    const old = await pair(code);
-    const sibling = await pair(await makeCode());
+    const pair = async () => await (await post("/api/devices", { name: "Test phone", platform: "android" }, owner.token)).json() as { device: { id: string }; device_token: string };
+    const old = await pair();
+    const sibling = await pair();
     const id = old.device.id;
     const path = `/api/v1/devices/${id}`;
     const token = { "x-device-token": old.device_token };
@@ -77,8 +91,7 @@ describe("FocusGuard API", () => {
     expect(await env.DB.prepare("SELECT status FROM commands WHERE id=?").bind(command.id).first()).toMatchObject({ status: "expired" });
     expect(await env.DB.prepare("SELECT duration_seconds FROM usage WHERE device_id=?").bind(id).first()).toMatchObject({ duration_seconds: 60 });
     expect(await env.DB.prepare("SELECT revoked_at FROM device_tokens WHERE device_id=?").bind(id).first()).toMatchObject({ revoked_at: expect.any(String) });
-    expect((await post("/api/devices/pair", { code, name: "Retry", platform: "android" })).status).toBe(400);
-    const fresh = await pair(await makeCode());
+    const fresh = await pair();
     expect(fresh.device.id).not.toBe(id);
     expect(fresh.device_token).not.toBe(old.device_token);
     expect((await request(`/api/devices/${fresh.device.id}/policy`, { headers: { "x-device-token": fresh.device_token } })).status).toBe(200);

@@ -47,13 +47,14 @@ class SyncApiClient(
     }
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
-    fun register(pairingCode: String, deviceId: String, appVersion: String): DeviceRegistration {
+    fun register(token: String, deviceId: String, appVersion: String): DeviceRegistration {
         val body = JSONObject()
-            .put("code", pairingCode)
+            .put("device_id", deviceId)
+            .put("token", token)
             .put("name", "Android device")
             .put("platform", "android")
             .put("app_version", appVersion)
-        val response = execute("POST", "/api/v1/devices/pair", body.toString())
+        val response = execute("POST", "/api/v1/devices/register", body.toString())
         return try {
             val device = response.optJSONObject("device")
             val id = device?.optString("id").orEmpty().ifBlank { response.optString("deviceId", deviceId) }

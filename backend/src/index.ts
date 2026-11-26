@@ -1,4 +1,4 @@
-export interface Env { DB: D1Database }
+export interface Env { DB: D1Database; PRIMARY_USER_ID?: string }
 
 type User = { id: string; email: string; display_name: string | null };
 type Auth = { user: User; sessionId: string };
@@ -120,8 +120,32 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (parts[1] === "register") { const pass = await hashPassword(input.password); const userId = id(); try { await env.DB.prepare("INSERT INTO users (id,email,display_name,password_salt,password_hash) VALUES (?,?,?,?,?)").bind(userId, email, str(input.display_name) ? input.display_name : null, pass.salt, pass.hash).run(); } catch { return error(409, "email_taken", "Email is already registered"); } const token = await randomToken(); await env.DB.prepare("INSERT INTO sessions (id,user_id,token_hash,expires_at) VALUES (?,?,?,?)").bind(id(), userId, await digest(token), new Date(Date.now() + 2592000000).toISOString()).run(); return json({ user: { id: userId, email, display_name: str(input.display_name) ? input.display_name : null }, token, expires_in: 2592000 }, 201); }
     const row = await env.DB.prepare("SELECT * FROM users WHERE email=?").bind(email).first<Record<string, unknown>>(); if (!row || !str(row.password_salt) || !str(row.password_hash) || !(await verifyPassword(input.password, row.password_salt, row.password_hash))) return error(401, "invalid_credentials", "Email or password is incorrect"); const token = await randomToken(); await env.DB.prepare("INSERT INTO sessions (id,user_id,token_hash,expires_at) VALUES (?,?,?,?)").bind(id(), row.id, await digest(token), new Date(Date.now() + 2592000000).toISOString()).run(); return json({ user: userView(row), token, expires_in: 2592000 });
   }
-  if (parts[0] === "devices" && parts.length === 2 && parts[1] === "pair" && method === "POST") {
-    const input = await body(request); const code = input?.code ?? input?.pairing_code; if (!input || !str(code, 6, 12) || !str(input.name) || !str(input.platform)) return error(400, "validation_error", "code, name and platform are required"); const pair = await env.DB.prepare("SELECT * FROM device_pairing_codes WHERE code_hash=? AND used_at IS NULL AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(await digest(code)).first<Record<string, unknown>>(); if (!pair) return error(400, "invalid_pairing_code", "Pairing code is invalid or expired"); const deviceId = String(pair.id); const token = await randomToken(); try { await env.DB.batch([env.DB.prepare("INSERT INTO devices (id,user_id,name,platform,app_version) VALUES (?,?,?,?,?)").bind(deviceId, pair.user_id, input.name, input.platform, str(input.app_version) ? input.app_version : null), env.DB.prepare("INSERT INTO device_tokens (id,device_id,token_hash) VALUES (?,?,?)").bind(id(), deviceId, await digest(token)), env.DB.prepare("UPDATE device_pairing_codes SET used_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND used_at IS NULL AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(pair.id)]); } catch { return error(400, "invalid_pairing_code", "Pairing code is invalid or expired"); } return json({ device: { id: deviceId, user_id: pair.user_id, name: input.name, platform: input.platform, app_version: input.app_version ?? null }, device_token: token }, 201);
+  // Code-free bootstrap deliberately accepts unauthenticated enrollment. Use only
+  // on a trusted network: HTTP provides neither secrecy nor server authentication.
+  if (parts[0] === "devices" && parts.length === 2 && parts[1] === "register" && method === "POST") {
+    const input = await body(request);
+    if (!input || !str(input.device_id, 36, 36) || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.device_id) || !str(input.token, 43, 43) || !/^[A-Za-z0-9_-]+$/.test(input.token) || !str(input.name, 1, 100) || input.platform !== "android") return error(400, "validation_error", "Invalid registration");
+    // Never guess between accounts; explicit PRIMARY_USER_ID, or a single existing account.
+    let owner: { id: string } | null;
+    if (env.PRIMARY_USER_ID) owner = await env.DB.prepare("SELECT id FROM users WHERE id=?").bind(env.PRIMARY_USER_ID).first<{ id: string }>();
+    else {
+      const users = await env.DB.prepare("SELECT id FROM users LIMIT 2").bind().all<{ id: string }>();
+      owner = users.results.length === 1 ? users.results[0] : null;
+    }
+    if (!owner) return error(503, "owner_not_configured", "Configure PRIMARY_USER_ID for the primary account");
+    const tokenHash = await digest(input.token);
+    const existing = await env.DB.prepare("SELECT d.id,d.user_id,d.unbound_at,t.token_hash FROM devices d LEFT JOIN device_tokens t ON t.device_id=d.id AND t.revoked_at IS NULL WHERE d.id=?").bind(input.device_id).first<Record<string, unknown>>();
+    if (existing) {
+      if (existing.user_id !== owner.id || existing.unbound_at !== null || !str(existing.token_hash) || !constantTimeEqual(existing.token_hash, tokenHash)) return error(409, "registration_conflict", "Device is already registered or unbound");
+      return json({device: {id: existing.id, user_id: owner.id}, device_token: input.token});
+    }
+    try {
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO devices (id,user_id,name,platform,app_version) VALUES (?,?,?,?,?)").bind(input.device_id, owner.id, input.name, input.platform, str(input.app_version, 1, 100) ? input.app_version : null),
+        env.DB.prepare("INSERT INTO device_tokens (id,device_id,token_hash) VALUES (?,?,?)").bind(id(), input.device_id, tokenHash),
+      ]);
+    } catch { return error(409, "registration_conflict", "Registration could not be completed"); }
+    return json({device: {id: input.device_id, user_id: owner.id}, device_token: input.token}, 201);
   }
   if (parts[0] === "devices" && parts.length === 3 && parts[2] === "heartbeat" && method === "POST" && deviceHeader(request)) {
     const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device");
@@ -150,7 +174,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const authResult = await sessionAuth(request, env); if (authResult instanceof Response) return authResult; const auth = authResult;
   if (parts[0] === "auth" && parts.length === 2 && parts[1] === "logout" && method === "POST") { await env.DB.prepare("DELETE FROM sessions WHERE id=?").bind(auth.sessionId).run(); return json({ ok: true }); }
   if ((parts[0] === "me" && parts.length === 1 || parts[0] === "auth" && parts[1] === "session" && parts.length === 2) && method === "GET") return json({ user: auth.user });
-  if (parts[0] === "devices" && parts.length === 2 && parts[1] === "pairing-codes" && method === "POST") { const random = crypto.getRandomValues(new Uint32Array(1))[0]; const code = String(100000 + (random % 900000)); await env.DB.prepare("INSERT INTO device_pairing_codes (id,user_id,code_hash,expires_at) VALUES (?,?,?,?)").bind(id(), auth.user.id, await digest(code), new Date(Date.now() + 600000).toISOString()).run(); return json({ code, expires_in: 600 }, 201); }
   if (parts[0] === "devices" && parts.length === 1 && method === "GET") { const rows = await env.DB.prepare("SELECT d.*,(SELECT p.id FROM policies p WHERE p.device_id=d.id AND p.enabled=1 ORDER BY p.version DESC,p.updated_at DESC LIMIT 1) AS policy_id,(SELECT p.version FROM policies p WHERE p.device_id=d.id AND p.enabled=1 ORDER BY p.version DESC,p.updated_at DESC LIMIT 1) AS policy_version FROM devices d WHERE d.user_id=? AND d.unbound_at IS NULL ORDER BY d.created_at DESC").bind(auth.user.id).all(); return json(rows.results.map(r => clean(r))); }
   if (parts[0] === "devices" && parts.length === 1 && method === "POST") { const input = await body(request); if (!input || !str(input.name) || !str(input.platform)) return error(400, "validation_error", "name and platform are required"); const deviceId = id(); const token = await randomToken(); await env.DB.batch([env.DB.prepare("INSERT INTO devices (id,user_id,name,platform,app_version) VALUES (?,?,?,?,?)").bind(deviceId, auth.user.id, input.name, input.platform, str(input.app_version) ? input.app_version : null), env.DB.prepare("INSERT INTO device_tokens (id,device_id,token_hash) VALUES (?,?,?)").bind(id(), deviceId, await digest(token))]); return json({ device: { id: deviceId, user_id: auth.user.id, name: input.name, platform: input.platform, app_version: input.app_version ?? null }, device_token: token }, 201); }
   if (parts[0] === "devices" && parts.length === 2 && method === "DELETE") {

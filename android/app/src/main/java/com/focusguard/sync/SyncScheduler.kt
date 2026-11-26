@@ -33,9 +33,6 @@ object SyncScheduler {
             ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<FocusGuardSyncWorker>().setConstraints(constraints).build(),
         )
-        // Pairing is an explicit user action; keep command delivery near-real-time
-        // afterward without requiring the accessibility service to be enabled.
-        SyncForegroundService.start(context)
     }
 
     /** Explicit opt-in hook for settings/UI without coupling the scheduler to UI code. */

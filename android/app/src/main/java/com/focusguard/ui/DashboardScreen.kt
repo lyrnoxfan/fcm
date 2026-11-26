@@ -76,7 +76,6 @@ fun DashboardScreen(
     weeklyLimitMinutes: String,
     monthlyLimitMinutes: String,
     syncBaseUrl: String,
-    pairingCode: String,
     paired: Boolean,
     lastSyncAtMillis: Long?,
     lastSyncError: String?,
@@ -87,9 +86,6 @@ fun DashboardScreen(
     message: String?,
     appLimitValue: (String) -> String,
     appSaving: (String) -> Boolean,
-    onSyncBaseUrlChanged: (String) -> Unit,
-    onPairingCodeChanged: (String) -> Unit,
-    onPairDevice: () -> Unit,
     onSyncNow: () -> Unit,
     onOpenUsageSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
@@ -175,7 +171,6 @@ fun DashboardScreen(
                     item {
                         SyncCard(
                             baseUrl = syncBaseUrl,
-                            pairingCode = pairingCode,
                             paired = paired,
                             syncBusy = syncBusy,
                             syncState = syncState,
@@ -184,9 +179,6 @@ fun DashboardScreen(
                             lastSyncAtMillis = lastSyncAtMillis,
                             lastSyncError = lastSyncError,
                             zoneId = zoneId,
-                            onBaseUrlChanged = onSyncBaseUrlChanged,
-                            onPairingCodeChanged = onPairingCodeChanged,
-                            onPair = onPairDevice,
                             onSyncNow = onSyncNow,
                         )
                     }
@@ -296,7 +288,6 @@ private fun StatusCard(message: String) {
 @Composable
 private fun SyncCard(
     baseUrl: String,
-    pairingCode: String,
     paired: Boolean,
     syncBusy: Boolean,
     syncState: SyncState?,
@@ -305,9 +296,6 @@ private fun SyncCard(
     lastSyncAtMillis: Long?,
     lastSyncError: String?,
     zoneId: String,
-    onBaseUrlChanged: (String) -> Unit,
-    onPairingCodeChanged: (String) -> Unit,
-    onPair: () -> Unit,
     onSyncNow: () -> Unit,
 ) {
     var expanded by remember(paired) { mutableStateOf(!paired) }
@@ -316,7 +304,7 @@ private fun SyncCard(
             SectionHeader("设备同步", if (paired) "已配对" else "未配对", expanded) { expanded = !expanded }
             Text(
                 if (paired) "设备令牌已保存在 Android Keystore，可直接同步策略、使用汇总和远程命令。"
-                else "输入管理端 API 地址与一次性配对码，建立本机设备连接。",
+                else "设备将自动注册到管理账号。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -333,30 +321,6 @@ private fun SyncCard(
             SettingSwitch("连续同步服务（10 秒轮询命令）", foregroundSyncEnabled, onForegroundSyncChanged)
             if (!foregroundSyncEnabled && paired) {
                 Text("未开启连续同步时，远程锁定只能等待系统周期同步。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-            if (expanded) {
-                OutlinedTextField(
-                    value = baseUrl,
-                    onValueChange = onBaseUrlChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("API 地址") },
-                    placeholder = { Text("https://example.com") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = pairingCode,
-                    onValueChange = onPairingCodeChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("一次性配对码") },
-                    singleLine = true,
-                )
-                Button(
-                    enabled = !syncBusy && baseUrl.isNotBlank() && pairingCode.isNotBlank(),
-                    onClick = onPair,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    BusyLabel(syncBusy, if (paired) "重新配对" else "配对设备")
-                }
             }
             OutlinedButton(enabled = !syncBusy && paired, onClick = onSyncNow, modifier = Modifier.fillMaxWidth()) {
                 BusyLabel(syncBusy, "立即同步")

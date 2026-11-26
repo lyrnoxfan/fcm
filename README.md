@@ -6,7 +6,7 @@ Android + Web + Cloudflare D1/Workers phone usage management system.
 
 - `android/`: Android application using Kotlin, Compose, UsageStatsManager, Room, and local aggregation.
 - `core-tests/`: JVM test harness for the pure usage aggregation domain logic.
-- `backend/`: Cloudflare Workers REST API, D1 migrations, user sessions, device pairing, device tokens, policy sync, usage upload, and command acknowledgements.
+- `backend/`: Cloudflare Workers REST API, D1 migrations, user sessions, automatic device registration, device tokens, policy sync, usage upload, and command acknowledgements.
 - `web/`: Astro + React administrator console with `/api/v1` session-based API integration.
 
 ## Verification
@@ -33,7 +33,8 @@ The Android APK build additionally requires an Android SDK with `ANDROID_HOME` o
 - Set a real D1 `database_id` in `backend/wrangler.toml` before deployment.
 - Configure the backend authentication secret with `wrangler secret put AUTH_TOKEN`.
 - Configure the Web console with the Worker origin (it automatically targets `/api/v1`).
-- Generate a one-time pairing code from the authenticated Web console, then enter it on the Android device; the device token is stored separately in Android Keystore-backed DataStore.
+- Android uses `http://113.44.6.95:8081`, with cleartext permitted only for that IP. On first launch it generates a device ID and token and registers automatically; the token is stored with Android Keystore. With multiple accounts, configure `PRIMARY_USER_ID` for the intended account. With a single account it is selected automatically; with no account registration waits until one exists.
+- Unauthenticated registration lets anyone able to reach the API add devices; HTTP exposes tokens and permits tampering. Restrict API access with a trusted VPN or firewall.
 - Android sync uses a 15-minute WorkManager job and on-demand hook; local PolicyEngine enforcement continues while offline.
 - Do not commit credentials, FCM service keys, or local environment files.
 
@@ -45,7 +46,7 @@ The repository contains the complete source and CI build definitions. Android AP
 
 - Android 首次打开时显示权限引导。使用情况访问和无障碍服务由使用者在系统设置中手动授权；Android 13+ 的通知许可可选。可以跳过，也可以从系统设置撤销。
 - 全局锁定时，应用尽力拦截普通应用（包括普通白名单应用），限制页仅显示「设备已被锁定」。系统锁屏、紧急呼叫、系统设置及权限撤销入口不受该限制。普通应用无障碍权限不等同于 Device Owner，不能保证不可绕过，不保证覆盖所有 Android 版本、分屏或厂商系统行为。
-- 网页端在设备详情底部可确认解绑。只有设备所属账号能执行；旧凭证即时撤销，待处理指令过期，策略解除绑定，服务器历史不被物理删除。设备在线同步收到拒绝后回到未配对状态；离线时无法立即收到撤销结果。重新连接必须使用新配对码。
+- 网页端在设备详情底部可确认解绑。只有设备所属账号能执行；旧凭证即时撤销，待处理指令过期，策略解除绑定，服务器历史不被物理删除。设备在线同步收到拒绝后回到未配对状态；离线时无法立即收到撤销结果。被解绑的设备身份不会自动重新注册。
 - 启用网页解绑前，先在目标环境应用后端迁移 `0007_device_unbinding.sql`，再部署对应 Worker 和网页。验收请使用隔离数据库和新建测试设备，不要对生产设备执行测试解绑。
 
 ### Android：锁定恢复与后台状态

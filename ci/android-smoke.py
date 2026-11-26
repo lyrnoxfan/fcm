@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import re
-import ssl
 import subprocess
 import time
 from threading import Thread
@@ -17,8 +16,7 @@ APP = 'com.focusguard'
 SERVICE = f'{APP}/.enforcement.PolicyAccessibilityService'
 BLOCKED = f'{APP}/.enforcement.BlockedActivity'
 ROOT = Path(os.environ['RUNNER_TEMP']) / 'focusguard-smoke'
-BASE = 'https://127.0.0.1:18787'
-TLS = ssl.create_default_context(cafile=str(ROOT / 'ca.pem'))
+BASE = 'http://127.0.0.1:18787'
 
 
 def adb(*args, check=True):
@@ -102,7 +100,7 @@ def api(path, method='GET', body=None, token=None, expected=200):
     r = Request(BASE + path, method=method, headers=headers,
                 data=None if body is None else json.dumps(body).encode())
     try:
-        with urlopen(r, context=TLS, timeout=5) as response:
+        with urlopen(r, timeout=5) as response:
             status, data = response.status, response.read()
     except HTTPError as e:
         status, data = e.code, e.read()
@@ -162,6 +160,9 @@ def onboarding():
     tap(wait_text('稍后设置'))
     wait_text('设备同步')
     assert text_is('设置 FocusGuard') is None, 'Skip did not dismiss the app dialog'
+    visible = nodes()
+    assert not any('配对码' in (n.get('text') or '') or 'API 地址' in (n.get('text') or '') for n in visible), 'manual setup control unexpectedly visible'
+    print('PASS: sync screen contains no manual address or pairing-code inputs')
     key('KEYCODE_HOME')
     wait_for(lambda: not active(APP), 'app moved to background before restart')
     shell('am', 'force-stop', APP)
@@ -169,22 +170,6 @@ def onboarding():
     wait_text('设备同步')
     assert text_is('设置 FocusGuard') is None
     print('PASS: first-run disclosure, Usage Access and Accessibility Settings navigation, notification prompt, skip and relaunch')
-
-
-def fields():
-    return [n for n in nodes() if n.get('class') == 'android.widget.EditText']
-
-
-def pair(code):
-    inputs = wait_for(fields, 'pairing fields')
-    # Use actual dashboard controls; a tall viewport keeps the two initial fields available.
-    assert len(inputs) == 2, f'expected two pairing fields, got {len(inputs)}'
-    tap(inputs[0]); shell('input', 'text', BASE); key('KEYCODE_BACK')
-    inputs = wait_for(lambda: f if len(f := fields()) == 2 else None, 'both pairing fields')
-    tap(inputs[1]); shell('input', 'text', code); key('KEYCODE_BACK')
-    wait_for(lambda: any(BASE in (n.get('text') or '') for n in fields()),
-             'typed endpoint persists through background sync')
-    tap(wait_text('配对设备'))
 
 
 def lock_activity_resumed():
@@ -228,20 +213,21 @@ def scenarios():
     shell('input', 'keyevent', 'KEYCODE_WAKEUP')
     shell('wm', 'dismiss-keyguard')
     shell('settings', 'put', 'system', 'screen_off_timeout', '600000')
+    token = api('/api/v1/auth/register', 'POST', {'email': 'android-smoke@example.test', 'password': 'fixture-only password 1234'}, expected=201)['token']
     onboarding()
     key('KEYCODE_HOME')
     seed_grants(True)
     wait_for(lambda: SERVICE in shell('settings', 'get', 'secure', 'enabled_accessibility_services'),
              'Android fixture lists service as enabled')
-    token = api('/api/v1/auth/register', 'POST', {'email': 'android-smoke@example.test', 'password': 'fixture-only password 1234'}, expected=201)['token']
-    code = api('/api/v1/devices/pairing-codes', 'POST', {}, token, 201)['code']
     launch_main()
-    pair(code)
     def paired():
         devices = api('/api/v1/devices', token=token)
         return devices[0]['id'] if devices and devices[0]['accessibility_enabled'] == 1 else None
-    device = wait_for(paired, 'Android pairs and reports active Accessibility', 50)
-    print('PASS: app paired over HTTPS to isolated D1; native device heartbeat received')
+    device = wait_for(paired, 'Android automatically registers and reports active Accessibility', 50)
+    print('PASS: app automatically registered over fixture HTTP; native device heartbeat received')
+    shell('am', 'force-stop', APP); launch_main()
+    wait_for(lambda: len(api('/api/v1/devices', token=token)) == 1 and api('/api/v1/devices', token=token)[0]['id'] == device, 'restart retains same device')
+    print('PASS: restarting app retains the same device identity without duplicates')
 
     def command(kind):
         cmd = api('/api/v1/commands', 'POST', {'device_id': device, 'command': kind, 'expires_in': 180}, token, 201)['id']
@@ -307,12 +293,14 @@ def scenarios():
     api(f'/api/v1/devices/{device}', 'DELETE', None, token, 200)
     wait_for(lambda: not active(APP), 'cached remote lock clears on unbind', 55)
     launch_main(); wait_text('未配对', 40)
-    assert not api('/api/v1/devices', token=token)
+    shell('am', 'force-stop', APP); launch_main()
+    time.sleep(3)
+    assert not api('/api/v1/devices', token=token), 'unbound device unexpectedly registered again'
     print('PASS: server unbind clears device pairing and remote restriction on actual Android app')
 
 
 class FixtureProxy(BaseHTTPRequestHandler):
-    """Terminate CI HTTPS using the job's explicitly pinned certificate."""
+    """Plain HTTP proxy, bound to loopback inside this disposable CI job."""
     protocol_version = 'HTTP/1.1'
 
     def relay(self):
@@ -342,9 +330,6 @@ class FixtureProxy(BaseHTTPRequestHandler):
 
 
 proxy = ThreadingHTTPServer(('127.0.0.1', 18787), FixtureProxy)
-server_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-server_tls.load_cert_chain(ROOT / 'server.pem', ROOT / 'server.key')
-proxy.socket = server_tls.wrap_socket(proxy.socket, server_side=True)
 Thread(target=proxy.serve_forever, daemon=True).start()
 
 with (ROOT / 'worker.log').open('w') as log:
@@ -356,7 +341,7 @@ with (ROOT / 'worker.log').open('w') as log:
         '--persist-to', str(ROOT / 'state'),
     ], env=fixture_env, stdout=log, stderr=subprocess.STDOUT)
     try:
-        wait_for(ready, 'local HTTPS Worker', 45)
+        wait_for(ready, 'local HTTP Worker', 45)
         scenarios()
     except Exception:
         print('Foreground:', current(), flush=True)

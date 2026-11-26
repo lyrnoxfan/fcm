@@ -1,7 +1,8 @@
 name: FocusGuard isolated Android smoke
 on:
+  workflow_dispatch:
   push:
-    branches: [fcm/ui-permissions-unbinding]
+    branches: [fcm/ui-permissions-unbinding, fcm/auto-register-http]
     paths: ['android/**', 'backend/**', 'ci/**', '.github/workflows/android-isolated.yml']
 permissions:
   contents: read
@@ -36,7 +37,7 @@ jobs:
             options="$options -accel off"
           fi
           echo "options=$options" >> "$GITHUB_OUTPUT"
-      - name: Prepare disposable HTTPS backend and Android debug APK
+      - name: Prepare disposable HTTP backend and Android debug APK
         run: bash ci/android-smoke-prepare.sh
       - name: Run on an isolated Android 15 emulator
         env:

@@ -87,7 +87,7 @@ const server = http.createServer(async (req, res) => {
       body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
       duplex: "half",
     });
-    const response = await worker.fetch(request, { DB: D1 });
+    const response = await worker.fetch(request, { DB: D1, PRIMARY_USER_ID: process.env.PRIMARY_USER_ID });
     const buf = Buffer.from(await response.arrayBuffer());
     res.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     res.end(buf);

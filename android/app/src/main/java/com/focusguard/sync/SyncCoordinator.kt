@@ -42,21 +42,6 @@ class SyncCoordinator(context: Context) {
     private val settings = SyncSettingsStore(appContext)
     private val policyStore = PolicyStore(database.policyDao())
 
-    suspend fun register(pairingCode: String, baseUrl: String): DeviceRegistration = withContext(Dispatchers.IO) {
-        syncMutex.withLock {
-            settings.setBaseUrl(baseUrl)
-            settings.setPairingCode(pairingCode)
-            val configured = settings.settings.first()
-            val deviceId = identity.getOrCreateDeviceId()
-            val registration = SyncApiClient(configured.baseUrl).register(pairingCode, deviceId, "0.1.0")
-            // Pairing creates the server-side device identity; persist both returned values.
-            identity.setDeviceId(registration.deviceId)
-            identity.setDeviceToken(registration.deviceToken)
-            settings.setPairingCode(null)
-            registration
-        }
-    }
-
     /** Serializes button, worker, and accessibility-service syncs in this process. */
     suspend fun sync(
         usageAccess: Boolean = usage.hasUsageAccess(),
@@ -76,21 +61,28 @@ class SyncCoordinator(context: Context) {
         accessibilityEnabled: Boolean,
         onCommandStatus: ((CommandSyncUpdate) -> Unit)?,
     ): SyncState {
+        val deviceId = identity.getOrCreateDeviceId()
         val configured = settings.settings.first()
         if (configured.baseUrl.isBlank()) return recordAndReturn(SyncState.NotConfigured)
-        val credentials = identity.credentials.first()
-        if (credentials.deviceToken.isNullOrBlank()) return recordAndReturn(SyncState.Unpaired)
         if (!isOnline()) return recordAndReturn(SyncState.Offline)
         return try {
             val client = SyncApiClient(configured.baseUrl)
-            val deviceId = identity.getOrCreateDeviceId()
-            client.heartbeat(deviceId, credentials.deviceToken, usageAccess, accessibilityEnabled)
+            var token = identity.credentials.first().deviceToken
+            if (token.isNullOrBlank()) {
+                if (!identity.registrationAllowed()) return recordAndReturn(SyncState.Unpaired)
+                val pending = identity.pendingRegistrationToken()
+                val result = client.register(pending, deviceId, "1.0.6")
+                require(result.deviceId == deviceId && result.deviceToken == pending) { "registration identity mismatch" }
+                identity.completeRegistration(pending)
+                token = pending
+            }
+            client.heartbeat(deviceId, token, usageAccess, accessibilityEnabled)
             if (usageAccess) {
                 usage.refreshHistory()
                 val daily = database.usageDao().latestDaily()
                 if (daily.isNotEmpty()) {
                     val batchId = "usage-${daily.first().localDate}-${daily.last().localDate}-${daily.maxOf { it.updatedAtMillis }}"
-                    runCatching { client.uploadUsage(deviceId, credentials.deviceToken, daily, batchId) }
+                    runCatching { client.uploadUsage(deviceId, token, daily, batchId) }
                         .onFailure { error ->
                             // Usage expansion/validation errors must remain visible but must not
                             // prevent policy fetch or remote command delivery/ACK.
@@ -98,12 +90,12 @@ class SyncCoordinator(context: Context) {
                         }
                 }
             }
-            client.fetchPolicy(deviceId, credentials.deviceToken, policyStore.version())?.let { remote ->
+            client.fetchPolicy(deviceId, token, policyStore.version())?.let { remote ->
                 if (policyStore.saveRemote(remote.config, remote.version)) {
                     PolicyAccessibilityService.requestForegroundReevaluation()
                 }
             }
-            processCommands(client, deviceId, credentials.deviceToken, onCommandStatus)
+            processCommands(client, deviceId, token, onCommandStatus)
             recordAndReturn(
                 if (!usageAccess || !accessibilityEnabled) {
                     SyncState.PermissionRequired(usageAccess, accessibilityEnabled)

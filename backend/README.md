@@ -19,9 +19,9 @@ Apply production migrations with `npm run db:migrate:remote`, then deploy with `
 
 `POST /api/auth/register` and `POST /api/auth/login` accept `{email,password,display_name?}` and return `{token,expires_in,user}`. Passwords are PBKDF2-SHA-256 hashes with random salts; only token hashes are stored in D1. Send the returned token as `Authorization: Bearer <token>`. `POST /api/auth/logout` revokes the current session and `GET /api/me` returns the authenticated user.
 
-## Devices and pairing
+## Devices and automatic registration
 
-Authenticated users can create a one-time ten-minute pairing code with `POST /api/devices/pairing-codes`. A device exchanges it without a user session using `POST /api/devices/pair` with `{code,name,platform,app_version?}` and receives a one-time `device_token`. Device requests use `X-Device-Token` (or `Authorization: Device <token>`). Device heartbeats are `POST /api/devices/:id/heartbeat`.
+Android calls `POST /api/v1/devices/register` with `{device_id,token,name,platform,app_version?}`. The ID and token are generated and stored by the device. The server uses `PRIMARY_USER_ID` when set; otherwise exactly one user must exist. Retries with the same credentials are idempotent and revoked identities cannot enroll again. Device requests use `X-Device-Token` (or `Authorization: Device <token>`); heartbeat is `POST /api/v1/devices/:id/heartbeat`. Enrollment is unauthenticated: restrict API network access. HTTP exposes credentials and allows interception and modification.
 
 ## Policies, commands, and usage
 
