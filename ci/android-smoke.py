@@ -44,7 +44,18 @@ def nodes():
     if 'dumped to' not in shell('uiautomator', 'dump', '/sdcard/focusguard-smoke.xml'):
         return []
     try:
-        return list(ET.fromstring(adb('exec-out', 'cat', '/sdcard/focusguard-smoke.xml')).iter('node'))
+        window_nodes = list(ET.fromstring(adb('exec-out', 'cat', '/sdcard/focusguard-smoke.xml')).iter('node'))
+        # A system Pixel Launcher ANR obscured MainActivity on a hosted run.
+        # Close only that system dialog; never hide a FocusGuard ANR or crash.
+        if any(n.get('package') == 'android' and n.get('text') == "Pixel Launcher isn't responding"
+               for n in window_nodes):
+            close = next((n for n in window_nodes if n.get('package') == 'android'
+                          and n.get('text') == 'Close app' and n.get('clickable') == 'true'), None)
+            if close is not None:
+                print('FIXTURE: close system Pixel Launcher ANR dialog', flush=True)
+                tap(close)
+                return []
+        return window_nodes
     except ET.ParseError:
         return []
 
@@ -119,7 +130,8 @@ def seed_grants(enabled):
 
 def onboarding():
     launch_main()
-    wait_text('设置 FocusGuard')
+    wait_text('设置 FocusGuard', 50)
+    print('OBSERVED: FocusGuard first-run permission dialog')
     ns = nodes()
     for label in ['使用情况访问', '无障碍服务', '通知 · 可选']:
         assert text_is(label, ns) is not None, f'Missing first-run permission: {label}'
@@ -189,8 +201,9 @@ def launch_ordinary_app():
 def scenarios():
     adb('install', 'android/app/build/outputs/apk/debug/app-debug.apk')
     adb('reverse', 'tcp:18787', 'tcp:18787')
-    shell('wm', 'size', '1080x2520')
-    shell('wm', 'density', '320')
+    # Retain the same ~540x1260 dp layout with fewer software-rendered pixels.
+    shell('wm', 'size', '720x1680')
+    shell('wm', 'density', '213')
     shell('input', 'keyevent', 'KEYCODE_WAKEUP')
     shell('wm', 'dismiss-keyguard')
     shell('settings', 'put', 'system', 'screen_off_timeout', '600000')
