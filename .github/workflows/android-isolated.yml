@@ -52,3 +52,43 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: ${{ steps.acceleration.outputs.options }}
           script: python3 -u ci/android-smoke.py
+  upgrade-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 65175efaa88fac13e3fea91d6cff660e24e50f6e
+          path: legacy-fcm
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Select emulator acceleration
+        id: acceleration
+        run: |
+          if [ ! -c /dev/kvm ]; then sudo modprobe kvm_intel || true; fi
+          if [ -c /dev/kvm ]; then sudo chmod a+rw /dev/kvm; fi
+          options='-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim'
+          if ! [ -r /dev/kvm ] || ! [ -w /dev/kvm ]; then options="$options -accel off"; fi
+          echo "options=$options" >> "$GITHUB_OUTPUT"
+      - name: Prepare old and new debug APKs and disposable backend
+        run: bash ci/android-upgrade-prepare.sh
+      - name: Test paired legacy APK upgrade on Android 15
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          emulator-boot-timeout: 600
+          emulator-options: ${{ steps.acceleration.outputs.options }}
+          script: python3 -u ci/android-upgrade.py

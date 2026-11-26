@@ -20,6 +20,8 @@ BASE = 'http://127.0.0.1:18787'
 # The backend's last device row can be stale after a force-stop. Count only
 # successful live heartbeats reporting an actually connected service.
 connected_heartbeats = []
+heartbeat_observations = []
+registration_observations = []
 
 
 def adb(*args, check=True):
@@ -320,7 +322,10 @@ class FixtureProxy(BaseHTTPRequestHandler):
             upstream.request(self.command, self.path, body=request_body, headers=incoming)
             response = upstream.getresponse()
             data = response.read()
+            if self.command == 'POST' and self.path.endswith('/devices/register'):
+                registration_observations.append(response.status)
             if self.command == 'POST' and self.path.endswith('/heartbeat') and response.status == 200:
+                heartbeat_observations.append(self.path)
                 try:
                     if json.loads(request_body or b'{}').get('accessibilityEnabled') is True:
                         connected_heartbeats.append(time.monotonic())
@@ -344,37 +349,38 @@ class FixtureProxy(BaseHTTPRequestHandler):
         pass
 
 
-proxy = ThreadingHTTPServer(('127.0.0.1', 18787), FixtureProxy)
-Thread(target=proxy.serve_forever, daemon=True).start()
+if __name__ == "__main__":
+    proxy = ThreadingHTTPServer(('127.0.0.1', 18787), FixtureProxy)
+    Thread(target=proxy.serve_forever, daemon=True).start()
 
-with (ROOT / 'worker.log').open('w') as log:
-    fixture_env = {key: os.environ[key] for key in ['PATH', 'HOME', 'TMPDIR'] if key in os.environ}
-    fixture_env['WRANGLER_SEND_METRICS'] = 'false'
-    worker = subprocess.Popen([
-        'backend/node_modules/.bin/wrangler', 'dev', '--config', str(ROOT / 'wrangler.toml'),
-        '--local', '--ip', '127.0.0.1', '--port', '18786',
-        '--persist-to', str(ROOT / 'state'),
-    ], env=fixture_env, stdout=log, stderr=subprocess.STDOUT)
-    try:
-        wait_for(ready, 'local HTTP Worker', 45)
-        scenarios()
-    except Exception:
-        print('Foreground:', current(), flush=True)
-        service_state = adb('shell', 'dumpsys', 'accessibility', check=False)
-        sections = [line.strip() for line in service_state.splitlines()
-                    if 'boundServices' in line or 'bindingServices' in line or 'enabledServices' in line
-                    or SERVICE in line]
-        print('Accessibility service state:', ('\n'.join(sections) or service_state)[-8000:], flush=True)
-        diag = subprocess.run(['adb', 'logcat', '-d', '-s', 'FocusGuard:I', 'AndroidRuntime:E'], text=True, capture_output=True, timeout=30)
-        print('Emulator app diagnostics:', (diag.stdout + diag.stderr)[-10000:], flush=True)
-        activity_log = adb('logcat', '-d', '-t', '2500', 'ActivityTaskManager:I', '*:S', check=False)
-        relevant = [line for line in activity_log.splitlines()
-                    if APP in line or 'background activity' in line.lower() or 'BAL_' in line]
-        print('Activity launch diagnostics:', '\n'.join(relevant)[-3500:], flush=True)
-        print((ROOT / 'worker.log').read_text()[-5000:], flush=True)
-        raise
-    finally:
-        worker.terminate()
-        worker.wait(timeout=10)
-        proxy.shutdown()
-        proxy.server_close()
+    with (ROOT / 'worker.log').open('w') as log:
+        fixture_env = {key: os.environ[key] for key in ['PATH', 'HOME', 'TMPDIR'] if key in os.environ}
+        fixture_env['WRANGLER_SEND_METRICS'] = 'false'
+        worker = subprocess.Popen([
+            'backend/node_modules/.bin/wrangler', 'dev', '--config', str(ROOT / 'wrangler.toml'),
+            '--local', '--ip', '127.0.0.1', '--port', '18786',
+            '--persist-to', str(ROOT / 'state'),
+        ], env=fixture_env, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            wait_for(ready, 'local HTTP Worker', 45)
+            scenarios()
+        except Exception:
+            print('Foreground:', current(), flush=True)
+            service_state = adb('shell', 'dumpsys', 'accessibility', check=False)
+            sections = [line.strip() for line in service_state.splitlines()
+                        if 'boundServices' in line or 'bindingServices' in line or 'enabledServices' in line
+                        or SERVICE in line]
+            print('Accessibility service state:', ('\n'.join(sections) or service_state)[-8000:], flush=True)
+            diag = subprocess.run(['adb', 'logcat', '-d', '-s', 'FocusGuard:I', 'AndroidRuntime:E'], text=True, capture_output=True, timeout=30)
+            print('Emulator app diagnostics:', (diag.stdout + diag.stderr)[-10000:], flush=True)
+            activity_log = adb('logcat', '-d', '-t', '2500', 'ActivityTaskManager:I', '*:S', check=False)
+            relevant = [line for line in activity_log.splitlines()
+                        if APP in line or 'background activity' in line.lower() or 'BAL_' in line]
+            print('Activity launch diagnostics:', '\n'.join(relevant)[-3500:], flush=True)
+            print((ROOT / 'worker.log').read_text()[-5000:], flush=True)
+            raise
+        finally:
+            worker.terminate()
+            worker.wait(timeout=10)
+            proxy.shutdown()
+            proxy.server_close()
