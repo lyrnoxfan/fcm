@@ -1,4 +1,6 @@
 """Test legitimate use of the app on a disposable emulator and isolated D1."""
+import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -6,6 +8,7 @@ import re
 import ssl
 import subprocess
 import time
+from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
@@ -99,7 +102,7 @@ def api(path, method='GET', body=None, token=None, expected=200):
 def ready():
     try:
         return api('/health')['status'] == 'ok'
-    except OSError:
+    except (OSError, AssertionError):
         return False
 
 
@@ -161,7 +164,7 @@ def locked_ui():
 
 
 def launch_ordinary_app():
-    for p in ['com.google.android.calculator', 'com.android.calculator2', 'com.google.android.apps.messaging', 'com.android.contacts', 'com.android.chrome']:
+    for p in ['com.google.android.calculator', 'com.android.calculator2', 'com.google.android.apps.messaging', 'com.android.messaging', 'com.google.android.contacts', 'com.android.contacts', 'com.android.chrome']:
         if shell('cmd', 'package', 'path', p).startswith('package:'):
             shell('monkey', '-p', p, '-c', 'android.intent.category.LAUNCHER', '1')
             return p
@@ -231,13 +234,48 @@ def scenarios():
     print('PASS: server unbind clears device pairing and remote restriction on actual Android app')
 
 
+class FixtureProxy(BaseHTTPRequestHandler):
+    """Terminate CI HTTPS using the job's explicitly pinned certificate."""
+    protocol_version = 'HTTP/1.1'
+
+    def relay(self):
+        upstream = http.client.HTTPConnection('127.0.0.1', 18786, timeout=10)
+        incoming = {k: v for k, v in self.headers.items() if k.lower() not in {'host', 'connection'}}
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+            upstream.request(self.command, self.path, body=self.rfile.read(size) if size else None, headers=incoming)
+            response = upstream.getresponse()
+            data = response.read()
+            self.send_response(response.status)
+            for k, v in response.getheaders():
+                if k.lower() not in {'server', 'date', 'transfer-encoding', 'content-length', 'connection'}:
+                    self.send_header(k, v)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (OSError, http.client.HTTPException):
+            self.send_error(503)
+        finally:
+            upstream.close()
+
+    do_GET = do_POST = do_PUT = do_DELETE = relay
+
+    def log_message(self, *args):
+        pass
+
+
+proxy = ThreadingHTTPServer(('127.0.0.1', 18787), FixtureProxy)
+server_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+server_tls.load_cert_chain(ROOT / 'server.pem', ROOT / 'server.key')
+proxy.socket = server_tls.wrap_socket(proxy.socket, server_side=True)
+Thread(target=proxy.serve_forever, daemon=True).start()
+
 with (ROOT / 'worker.log').open('w') as log:
     fixture_env = {key: os.environ[key] for key in ['PATH', 'HOME', 'TMPDIR'] if key in os.environ}
     fixture_env['WRANGLER_SEND_METRICS'] = 'false'
     worker = subprocess.Popen([
         'backend/node_modules/.bin/wrangler', 'dev', '--config', str(ROOT / 'wrangler.toml'),
-        '--local', '--ip', '127.0.0.1', '--port', '18787', '--local-protocol', 'https',
-        '--https-key-path', str(ROOT / 'server.key'), '--https-cert-path', str(ROOT / 'server.pem'),
+        '--local', '--ip', '127.0.0.1', '--port', '18786',
         '--persist-to', str(ROOT / 'state'),
     ], env=fixture_env, stdout=log, stderr=subprocess.STDOUT)
     try:
@@ -246,8 +284,11 @@ with (ROOT / 'worker.log').open('w') as log:
     except Exception:
         print('Foreground:', current(), flush=True)
         print('UI labels:', [n.get('text') for n in nodes() if n.get('text')], flush=True)
+        print('Emulator app diagnostics:', adb('logcat', '-d', '-t', '250', 'AndroidRuntime:E', 'FocusGuard:W', '*:S')[-3500:], flush=True)
         print((ROOT / 'worker.log').read_text()[-5000:], flush=True)
         raise
     finally:
         worker.terminate()
         worker.wait(timeout=10)
+        proxy.shutdown()
+        proxy.server_close()
