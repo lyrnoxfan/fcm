@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <queries>
+        <intent><action android:name="android.settings.SETTINGS" /></intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -23,7 +24,8 @@
         <activity
             android:name=".enforcement.BlockedActivity"
             android:exported="false"
-            android:excludeFromRecents="true" />
+            android:excludeFromRecents="true"
+            android:taskAffinity="com.focusguard.restriction" />
         <service
             android:name=".enforcement.PolicyAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"

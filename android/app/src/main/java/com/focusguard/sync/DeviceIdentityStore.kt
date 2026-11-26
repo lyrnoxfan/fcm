@@ -66,7 +66,10 @@ class DeviceIdentityStore(private val context: Context) {
     }
 
     suspend fun clearDeviceRegistration() {
-        appContext.deviceIdentityDataStore.edit { prefs -> prefs.remove(DEVICE_TOKEN) }
+        appContext.deviceIdentityDataStore.edit { prefs ->
+            prefs.remove(DEVICE_TOKEN)
+            prefs.remove(DEVICE_ID)
+        }
     }
 
     private fun encrypt(value: String): String {

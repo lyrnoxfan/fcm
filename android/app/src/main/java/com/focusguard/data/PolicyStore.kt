@@ -64,6 +64,13 @@ class PolicyStore(private val dao: PolicyDao) {
         return version
     }
 
+    /** A revoked pairing no longer owns the lock or the server policy version. */
+    suspend fun clearPairingState(nowMillis: Long = System.currentTimeMillis()) {
+        val current = dao.get() ?: return
+        val config = load().copy(forceStopped = false)
+        dao.save(current.copy(version = current.version + 1, serverVersion = 0, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
+    }
+
     suspend fun saveRemote(config: PolicyConfig, version: Long, nowMillis: Long = System.currentTimeMillis()): Boolean {
         val current = dao.get()
         if (version <= (current?.serverVersion ?: 0L)) return false

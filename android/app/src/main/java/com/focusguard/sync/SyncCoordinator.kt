@@ -15,6 +15,7 @@ import com.focusguard.usage.UsageRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class CommandSyncUpdate(
@@ -44,16 +45,18 @@ class SyncCoordinator(context: Context) {
     private val policyStore = PolicyStore(database.policyDao())
 
     suspend fun register(pairingCode: String, baseUrl: String): DeviceRegistration = withContext(Dispatchers.IO) {
-        settings.setBaseUrl(baseUrl)
-        settings.setPairingCode(pairingCode)
-        val configured = settings.settings.first()
-        val deviceId = identity.getOrCreateDeviceId()
-        val registration = SyncApiClient(configured.baseUrl).register(pairingCode, deviceId, "0.1.0")
-        // Pairing creates the server-side device identity; persist both returned values.
-        identity.setDeviceId(registration.deviceId)
-        identity.setDeviceToken(registration.deviceToken)
-        settings.setPairingCode(null)
-        registration
+        syncMutex.withLock {
+            settings.setBaseUrl(baseUrl)
+            settings.setPairingCode(pairingCode)
+            val configured = settings.settings.first()
+            val deviceId = identity.getOrCreateDeviceId()
+            val registration = SyncApiClient(configured.baseUrl).register(pairingCode, deviceId, "0.1.0")
+            // Pairing creates the server-side device identity; persist both returned values.
+            identity.setDeviceId(registration.deviceId)
+            identity.setDeviceToken(registration.deviceToken)
+            settings.setPairingCode(null)
+            registration
+        }
     }
 
     /** Serializes button, worker, and accessibility-service syncs in this process. */
@@ -113,8 +116,10 @@ class SyncCoordinator(context: Context) {
         } catch (error: SyncApiException.Network) {
             recordAndReturn(SyncState.NetworkError(error.message ?: "network unavailable"))
         } catch (error: SyncApiException.Unauthorized) {
+            policyStore.clearPairingState()
             identity.clearDeviceRegistration()
-            recordAndReturn(SyncState.ServerError(error.message ?: "device authentication rejected"))
+            PolicyAccessibilityService.requestForegroundReevaluation()
+            recordAndReturn(SyncState.Unpaired)
         } catch (error: SyncApiException.Permission) {
             recordAndReturn(SyncState.PermissionRequired(usageAccess, accessibilityEnabled))
         } catch (error: SyncApiException) {

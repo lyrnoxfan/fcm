@@ -51,11 +51,15 @@ class PolicyEngineTest {
         assertTrue(PolicyEngine.evaluate(config, UsageSnapshot(now("2026-11-25T12:00:00Z"), appMillis = usage), "video.app").blocked)
     }
 
-    @Test fun manualStopIsOverriddenByWhitelistButNotProtectedPackages() {
-        val config = PolicyConfig(forceStopped = true, whitelist = setOf("chat.app"), protectedPackages = setOf("phone.app"))
+    @Test fun globalLockOverridesOrdinaryAllowListsButPreservesEssentialSystemAccess() {
+        val config = PolicyConfig(enabled = false, forceStopped = true, whitelist = setOf("chat.app"), protectedPackages = setOf("video.app"))
         val snapshot = UsageSnapshot(now("2026-11-25T10:00:00Z"))
-        assertFalse(PolicyEngine.evaluate(config, snapshot, "chat.app").blocked)
-        assertFalse(PolicyEngine.evaluate(config, snapshot, "phone.app").blocked)
+        assertTrue(PolicyEngine.evaluate(config, snapshot, "chat.app").blocked)
+        assertFalse(PolicyEngine.evaluate(config, snapshot, "com.android.settings").blocked)
+        assertFalse(PolicyEngine.evaluate(config, snapshot, "com.android.systemui").blocked)
+        assertFalse(PolicyEngine.evaluate(config, snapshot, "com.android.emergency").blocked)
+        assertFalse(PolicyEngine.evaluate(config, snapshot, "phone.app", systemExemptions = setOf("phone.app")).blocked)
+        assertFalse(PolicyEngine.evaluate(config.copy(forceStopped = false), snapshot, "chat.app").blocked)
         assertTrue(PolicyEngine.evaluate(config, snapshot, "video.app").blocked)
     }
 

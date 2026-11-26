@@ -85,11 +85,18 @@ object PolicyEngine {
         "com.google.android.permissioncontroller",
     )
 
-    fun evaluate(config: PolicyConfig, snapshot: UsageSnapshot, foregroundPackage: String): PolicyDecision {
-        if (!config.enabled || foregroundPackage in essentialPackages || foregroundPackage in config.protectedPackages || foregroundPackage in config.whitelist) {
+    fun forceStopDecision(config: PolicyConfig, foregroundPackage: String, systemExemptions: Set<String> = emptySet()): PolicyDecision? {
+        if (!config.forceStopped) return null
+        return if (foregroundPackage in essentialPackages || foregroundPackage in systemExemptions) {
+            PolicyDecision(false)
+        } else PolicyDecision(true, BlockReason.FORCE_STOP, foregroundPackage)
+    }
+
+    fun evaluate(config: PolicyConfig, snapshot: UsageSnapshot, foregroundPackage: String, systemExemptions: Set<String> = emptySet()): PolicyDecision {
+        forceStopDecision(config, foregroundPackage, systemExemptions)?.let { return it }
+        if (!config.enabled || foregroundPackage in essentialPackages || foregroundPackage in systemExemptions || foregroundPackage in config.protectedPackages || foregroundPackage in config.whitelist) {
             return PolicyDecision(false)
         }
-        if (config.forceStopped) return PolicyDecision(true, BlockReason.FORCE_STOP, foregroundPackage)
 
         val activeSchedule = config.schedules.firstOrNull { rule ->
             rule.isActiveAt(snapshot.now) && (rule.target.isDevice || rule.target.packageName == foregroundPackage)

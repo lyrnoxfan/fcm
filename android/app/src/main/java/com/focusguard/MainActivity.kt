@@ -3,11 +3,13 @@ package com.focusguard
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.os.Bundle
+import android.os.Build
+import android.content.pm.PackageManager
+import androidx.activity.result.contract.ActivityResultContracts
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +32,8 @@ import com.focusguard.sync.SyncScheduler
 import com.focusguard.sync.SyncState
 import com.focusguard.sync.SyncSettingsStore
 import com.focusguard.ui.DashboardScreen
+import com.focusguard.ui.FocusGuardTheme
+import com.focusguard.ui.PermissionOnboarding
 import com.focusguard.usage.UsageRepository
 import java.time.LocalDate
 import java.time.ZoneId
@@ -43,11 +47,25 @@ class MainActivity : ComponentActivity() {
     private val syncSettings by lazy { SyncSettingsStore(this) }
     private val identity by lazy { DeviceIdentityStore(this) }
 
+    private val onboarding by lazy { getSharedPreferences("permission_onboarding", MODE_PRIVATE) }
+    private var notificationsGranted by mutableStateOf<Boolean?>(null)
+    private val notificationRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        updateNotificationGrant()
+    }
+
+    private fun updateNotificationGrant() {
+        notificationsGranted = if (Build.VERSION.SDK_INT >= 33)
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        else null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SyncScheduler.schedule(this)
+        updateNotificationGrant()
         setContent {
-            MaterialTheme {
+            FocusGuardTheme {
+                var showPermissionOnboarding by remember { mutableStateOf(!onboarding.getBoolean("finished", false)) }
                 var hasPermission by remember { mutableStateOf(repository.hasUsageAccess()) }
                 var loading by remember { mutableStateOf(false) }
                 var savingPolicy by remember { mutableStateOf(false) }
@@ -77,6 +95,7 @@ class MainActivity : ComponentActivity() {
                 DisposableEffect(this) {
                     val observer = LifecycleEventObserver { _, event ->
                         if (event == Lifecycle.Event.ON_RESUME) {
+                            updateNotificationGrant()
                             hasPermission = repository.hasUsageAccess()
                             accessibilityEnabled = isPolicyServiceEnabled()
                         }
@@ -96,7 +115,12 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(Unit) {
                     identity.credentials.collectLatest { credentials ->
-                        paired = credentials.deviceToken?.isNotBlank() == true
+                        val stillPaired = credentials.deviceToken?.isNotBlank() == true
+                        if (paired && !stillPaired) {
+                            syncState = SyncState.Unpaired
+                            policy = repository.loadPolicy()
+                        }
+                        paired = stillPaired
                     }
                 }
 
@@ -143,6 +167,23 @@ class MainActivity : ComponentActivity() {
                             dailyRows = rows
                         }
                     }
+                }
+
+                if (showPermissionOnboarding) {
+                    PermissionOnboarding(
+                        usage = hasPermission,
+                        accessibility = accessibilityEnabled,
+                        notifications = notificationsGranted,
+                        onUsage = { startActivity(repository.usageAccessSettingsIntent()) },
+                        onAccessibility = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                        onNotifications = {
+                            if (Build.VERSION.SDK_INT >= 33) notificationRequest.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        },
+                        onDone = {
+                            onboarding.edit().putBoolean("finished", true).apply()
+                            showPermissionOnboarding = false
+                        },
+                    )
                 }
 
                 DashboardScreen(

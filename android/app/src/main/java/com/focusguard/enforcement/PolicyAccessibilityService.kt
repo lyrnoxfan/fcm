@@ -1,38 +1,41 @@
 package com.focusguard.enforcement
 
 import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
+import android.telecom.TelecomManager
 import android.view.accessibility.AccessibilityEvent
 import com.focusguard.core.PolicyEngine
-import com.focusguard.usage.UsageRepository
 import com.focusguard.sync.SyncCoordinator
+import com.focusguard.usage.UsageRepository
 import java.time.ZonedDateTime
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicBoolean
 
-/** User-enabled observer; ordinary apps cannot provide unbypassable app disabling. */
+/** Best-effort enforcement. It never changes system permissions or takes over the keyguard. */
 class PolicyAccessibilityService : AccessibilityService() {
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(Looper.getMainLooper())
     private val repository by lazy { UsageRepository(this) }
     private var foregroundPackage: String? = null
-    private val restrictionVisible = AtomicBoolean(false)
-    private val syncInFlight = AtomicBoolean(false)
+    private var evaluation: Job? = null
+    private var sync: Job? = null
+    private var lastLaunchAt = 0L
 
     private val reevaluate = object : Runnable {
         override fun run() {
-            if (!restrictionVisible.get()) foregroundPackage?.let(::evaluatePackage)
-            if (syncInFlight.compareAndSet(false, true)) {
-                serviceScope.launch {
-                    try { SyncCoordinator(this@PolicyAccessibilityService).sync(accessibilityEnabled = true) }
-                    finally { syncInFlight.set(false) }
-                }
+            foregroundPackage?.takeIf { evaluation?.isActive != true }?.let(::evaluatePackage)
+            if (sync?.isActive != true) sync = scope.launch(Dispatchers.IO) {
+                runCatching { SyncCoordinator(this@PolicyAccessibilityService).sync(accessibilityEnabled = true) }
             }
             handler.postDelayed(this, EVALUATION_INTERVAL_MS)
         }
@@ -47,40 +50,50 @@ class PolicyAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        val packageName = event.packageName?.toString() ?: return
-        if (packageName == applicationContext.packageName) {
-            restrictionVisible.set(true)
-            return
-        }
-        if (packageName != foregroundPackage || restrictionVisible.get()) {
-            restrictionVisible.set(false)
-            foregroundPackage = packageName
-            handler.removeCallbacks(reevaluate)
-            evaluatePackage(packageName)
-            handler.postDelayed(reevaluate, EVALUATION_INTERVAL_MS)
-        }
+        val name = event.packageName?.toString() ?: return
+        if (name == packageName && (event.className?.toString() == BlockedActivity::class.java.name || BlockedActivity.isResumed)) return
+        if (foregroundPackage != name) lastLaunchAt = 0L
+        foregroundPackage = name
+        if (evaluation?.isActive != true || name != evaluatedPackage) evaluatePackage(name)
     }
 
-    private fun evaluatePackage(packageName: String) {
-        serviceScope.launch {
-            runCatching {
-                repository.refreshHistory()
-                val decision = PolicyEngine.evaluate(
-                    repository.loadPolicy(),
-                    repository.snapshotAt(ZonedDateTime.now()),
-                    packageName,
-                )
-                if (decision.blocked && restrictionVisible.compareAndSet(false, true)) {
-                    handler.removeCallbacks(reevaluate)
-                    startActivity(
-                        Intent(this@PolicyAccessibilityService, BlockedActivity::class.java)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                            .putExtra(BlockedActivity.EXTRA_PACKAGE_NAME, packageName)
-                            .putExtra(BlockedActivity.EXTRA_REASON, decision.reason?.name)
-                            .putExtra(BlockedActivity.EXTRA_USED_MILLIS, decision.usedMillis)
-                            .putExtra(BlockedActivity.EXTRA_LIMIT_MILLIS, decision.limitMillis ?: -1L),
-                    )
+    private var evaluatedPackage: String? = null
+    private fun evaluatePackage(name: String) {
+        evaluation?.cancel()
+        evaluatedPackage = name
+        evaluation = scope.launch {
+            try {
+                val config = repository.loadPolicy()
+                val exemptions = buildSet {
+                    getSystemService(TelecomManager::class.java)?.defaultDialerPackage?.let(::add)
+                    getSystemService(TelecomManager::class.java)?.systemDialerPackage?.let(::add)
+                    // Resolve Android's own Settings app, not arbitrary packages handling the intent.
+                    packageManager.resolveActivity(Intent(Settings.ACTION_SETTINGS), android.content.pm.PackageManager.MATCH_SYSTEM_ONLY)
+                        ?.activityInfo?.packageName?.let(::add)
                 }
+                val decision = PolicyEngine.forceStopDecision(config, name, exemptions) ?: run {
+                    if (name == packageName || !config.enabled || !repository.hasUsageAccess()) return@launch
+                    repository.refreshHistory()
+                    PolicyEngine.evaluate(config, repository.snapshotAt(ZonedDateTime.now()), name, exemptions)
+                }
+                if (foregroundPackage != name || !decision.blocked || BlockedActivity.isResumed) return@launch
+                if (getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true ||
+                    getSystemService(PowerManager::class.java)?.isInteractive != true) return@launch
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (lastLaunchAt != 0L && now - lastLaunchAt < 1000L) return@launch
+                lastLaunchAt = now
+                startActivity(
+                    Intent(this@PolicyAccessibilityService, BlockedActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        .putExtra(BlockedActivity.EXTRA_PACKAGE_NAME, name)
+                        .putExtra(BlockedActivity.EXTRA_REASON, decision.reason?.name)
+                        .putExtra(BlockedActivity.EXTRA_USED_MILLIS, decision.usedMillis)
+                        .putExtra(BlockedActivity.EXTRA_LIMIT_MILLIS, decision.limitMillis ?: -1L),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                android.util.Log.w("FocusGuard", "Restriction could not be shown (${error.javaClass.simpleName})")
             }
         }
     }
@@ -90,28 +103,19 @@ class PolicyAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         handler.removeCallbacks(reevaluate)
         if (activeInstance === this) activeInstance = null
-        serviceScope.cancel()
+        scope.cancel()
         super.onDestroy()
-    }
-
-    private fun reevaluateCurrentForeground() {
-        handler.post {
-            val packageName = foregroundPackage ?: return@post
-            // A remote lock/unlock/policy update must not wait for a window event.
-            restrictionVisible.set(false)
-            handler.removeCallbacks(reevaluate)
-            evaluatePackage(packageName)
-            handler.postDelayed(reevaluate, EVALUATION_INTERVAL_MS)
-        }
     }
 
     companion object {
         private const val EVALUATION_INTERVAL_MS = 5_000L
         @Volatile private var activeInstance: PolicyAccessibilityService? = null
+        val connected: Boolean get() = activeInstance != null
 
         /** Called by sync workers/services after a policy or lock command is applied. */
         fun requestForegroundReevaluation() {
-            activeInstance?.reevaluateCurrentForeground()
+            val service = activeInstance ?: return
+            service.handler.post { service.foregroundPackage?.let(service::evaluatePackage) }
         }
     }
 }

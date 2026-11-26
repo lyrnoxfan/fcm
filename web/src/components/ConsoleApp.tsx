@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SyntheticEvent, ReactNode } from 'react';
 import {
-  Activity, AlertCircle, ArrowRight, Bell, Check, ChevronDown, CircleHelp, Clock3, Code2,
+  Activity, AlertCircle, ArrowRight, Check, ChevronDown, CircleHelp, Clock3, Code2,
   Copy, Laptop, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Menu, Pencil,
   Plus, RefreshCw, Search, Send, Settings2, Shield, ShieldCheck, Smartphone, Sparkles,
   Terminal, Wifi, X,
@@ -145,6 +145,8 @@ export default function ConsoleApp() {
   const [search, setSearch] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [baseDraft, setBaseDraft] = useState('');
+  const [unbindDevice, setUnbindDevice] = useState<Device | null>(null);
+  const unboundIds = useRef(new Set<string>());
   const [selected, setSelected] = useState<string | null>(null);
   const [busyCommands, setBusyCommands] = useState<Record<string, boolean>>({});
   const [busyPolicy, setBusyPolicy] = useState<string | null>(null);
@@ -197,6 +199,8 @@ export default function ConsoleApp() {
     setDataError('');
     setPartialErrors([]);
     setSelected(null);
+    setUnbindDevice(null);
+    unboundIds.current.clear();
     setUserLabel('');
     setBusyCommands({});
     idempotencyKeys.current.clear();
@@ -393,9 +397,10 @@ export default function ConsoleApp() {
 
   const pollCommand = useCallback(async (deviceId: string, commandId: string, operation: string, generation: number, kind: CommandKind) => {
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      if (generation !== sessionGeneration.current || !config.baseUrl || !config.token) return;
+      if (generation !== sessionGeneration.current || unboundIds.current.has(deviceId) || !config.baseUrl || !config.token) return;
       try {
         const result = await request<unknown>(config, `${API_PATHS.devices}/${encodeURIComponent(deviceId)}/commands/${encodeURIComponent(commandId)}`);
+        if (generation !== sessionGeneration.current || unboundIds.current.has(deviceId)) return;
         const next = { ...normalizeCommand(result), deviceId };
         setCommands((current) => ({ ...current, [commandId]: next }));
         const normalized = next.status.toLowerCase();
@@ -438,6 +443,7 @@ export default function ConsoleApp() {
         headers: { 'Idempotency-Key': key },
         body: JSON.stringify({ kind, payload: {} }),
       });
+      if (generation !== sessionGeneration.current || unboundIds.current.has(device.id)) return;
       const queued = normalizeCommand(response);
       if (!queued.id) throw new Error('命令响应中未找到 command id，无法查询执行状态。');
       const initial: CommandState = { ...queued, deviceId: device.id, status: queued.status || 'pending' };
@@ -454,6 +460,26 @@ export default function ConsoleApp() {
       notify('error', errorMessage(error, '远程命令发送失败。'));
     }
   }, [busyCommands, config, notify, pollCommand]);
+
+  async function confirmUnbind(device: Device) {
+    const generation = sessionGeneration.current;
+    const result = await request<{ ok?: boolean; device_id?: string }>(config, `${API_PATHS.devices}/${encodeURIComponent(device.id)}`, { method: 'DELETE' });
+    if (result?.ok !== true || result.device_id !== device.id) throw new Error('服务器未返回解绑确认，请刷新设备列表。');
+    if (generation !== sessionGeneration.current) return;
+    unboundIds.current.add(device.id);
+    refreshGeneration.current += 1;
+    refreshController.current?.abort();
+    setDevices((rows) => rows.filter((row) => row.id !== device.id));
+    setUsage((rows) => rows.filter((row) => row.deviceId !== device.id));
+    setCommands((rows) => Object.fromEntries(Object.entries(rows).filter(([, row]) => row.deviceId !== device.id)));
+    setPolicies((rows) => rows.map((row) => row.deviceId === device.id ? { ...row, deviceId: undefined } : row));
+    setBusyCommands((rows) => Object.fromEntries(Object.entries(rows).filter(([key]) => !key.startsWith(`${device.id}:`))));
+    for (const key of idempotencyKeys.current.keys()) if (key.startsWith(`${device.id}:`)) idempotencyKeys.current.delete(key);
+    setSelected(null);
+    setUnbindDevice(null);
+    notify('success', '设备已解绑，旧凭证已失效。');
+    void refresh();
+  }
 
   async function savePolicy(values: PolicyFormValues, editor: PolicyEditorState) {
     const operation = editor.policy?.id || 'new';
@@ -591,7 +617,7 @@ export default function ConsoleApp() {
       <header className="topbar">
         <button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setMobileNav(true)}><Menu size={19} /></button>
         <div className="breadcrumbs"><span>Workspace</span><span className="crumb-slash">/</span><b>{viewLabel(view)}</b></div>
-        <div className="top-actions"><span className="live-status"><span /> {loaded ? 'LIVE' : 'SYNCING'}</span><button className="icon-button" title="刷新设备、策略与 usage" onClick={() => void refresh()} disabled={loading}>{loading ? <LoaderCircle size={17} className="spin" /> : <RefreshCw size={17} />}</button><button className="icon-button" title="通知状态"><Bell size={17} /></button><span className="top-avatar">{initials(userLabel)}</span></div>
+        <div className="top-actions"><span className="live-status"><span /> {loaded ? 'LIVE' : 'SYNCING'}</span><button className="icon-button" title="刷新设备、策略与 usage" onClick={() => void refresh()} disabled={loading}>{loading ? <LoaderCircle size={17} className="spin" /> : <RefreshCw size={17} />}</button><span className="top-avatar">{initials(userLabel)}</span></div>
       </header>
       {notice && <div className={`toast ${notice.kind}`} role="status"><span className="toast-icon">{notice.kind === 'error' ? <AlertCircle size={17} /> : notice.kind === 'success' ? <Check size={17} /> : <Activity size={17} />}</span><span>{notice.text}</span><button className="toast-close" onClick={() => setNotice(null)} aria-label="关闭"><X size={15} /></button></div>}
       <div className="content-area">
@@ -601,7 +627,8 @@ export default function ConsoleApp() {
       </div>
       <footer className="footer"><span>FOCUSGUARD CONTROL PLANE <i>·</i> v0.2.0</span><span><CircleHelp size={13} /> {sessionBusy ? '正在验证会话' : `API ${config.baseUrl}`}</span></footer>
     </main>
-    {currentDevice && <DeviceDrawer device={currentDevice} commands={commandsForDevice(currentDevice.id)} onClose={() => setSelected(null)} onCommand={sendDeviceCommand} busyCommands={busyCommands} />}
+    {currentDevice && <DeviceDrawer device={currentDevice} commands={commandsForDevice(currentDevice.id)} onClose={() => setSelected(null)} onCommand={sendDeviceCommand} busyCommands={busyCommands} onUnbind={() => setUnbindDevice(currentDevice)} />}
+    {unbindDevice && <UnbindDialog device={unbindDevice} onClose={() => setUnbindDevice(null)} onConfirm={() => confirmUnbind(unbindDevice)} />}
     {policyEditor && <PolicyEditorModal editor={policyEditor} busy={busyPolicy === (policyEditor.policy?.id || 'new')} devices={devices} onClose={() => setPolicyEditor(null)} onSubmit={(values) => void savePolicy(values, policyEditor)} />}
     {showSettings && <SettingsModal value={baseDraft} setValue={setBaseDraft} onClose={() => setShowSettings(false)} onSubmit={saveBaseUrl} />}
     {pairingCode && <PairingCodeModal code={pairingCode.code} expiresAt={pairingCode.expiresAt} onClose={() => setPairingCode(null)} onError={(message) => notify('error', message)} />}
@@ -799,9 +826,36 @@ function PolicyCard(props: { policy: Policy; devices: Device[]; busy: boolean; o
   return <article className="policy-card"><div className="policy-card-top"><span className={`policy-icon large ${props.policy.enabled ? 'enabled' : ''}`}><Shield size={19} /></span><span className={`policy-state ${props.policy.enabled ? 'enabled' : ''}`}><span />{props.policy.enabled ? '已启用' : '已停用'}</span><button className="icon-button policy-menu" title="编辑策略" onClick={props.onEdit}><Pencil size={15} /></button></div><div className="policy-title-row"><div><h3>{props.policy.name}</h3><p>{props.policy.description || '暂无策略说明。'}</p></div><span className="policy-version">v{props.policy.version ?? '—'}</span></div><div className="rule-chips">{typeof limits.screen_time_minutes === 'number' && <span>屏幕时长 {limits.screen_time_minutes} 分钟</span>}{typeof limits.downtime_start === 'string' && <span>停用 {limits.downtime_start}{typeof limits.downtime_end === 'string' ? `–${limits.downtime_end}` : ''}</span>}{limits.block_camera === true && <span>阻止相机</span>}{Object.keys(limits).length === 0 && <span>自定义规则 JSON</span>}</div><div className="policy-card-meta"><span><Smartphone size={14} />{bound.length || props.policy.deviceCount || 0} 台绑定设备</span><span className="policy-id">ID {props.policy.id}</span></div><div className="assign-row"><select aria-label={`为${props.policy.name}选择设备`} value={target} onChange={(event) => setTarget(event.target.value)}><option value="">选择设备绑定</option>{props.devices.map((device) => <option key={device.id} value={device.id}>{device.name || device.id}</option>)}</select><button className="assign-button" title="绑定策略" onClick={() => props.onAssign(target)} disabled={props.busy || !target}>{props.busy ? <LoaderCircle size={15} className="spin" /> : <Send size={15} />}</button></div><div className="policy-actions"><button className="text-button" onClick={props.onEdit}><Code2 size={14} /> 查看规则 JSON</button><button className="policy-toggle" onClick={props.onToggle} disabled={props.busy}>{props.busy ? <LoaderCircle size={14} className="spin" /> : props.policy.enabled ? '停用策略' : '启用策略'}<ArrowRight size={14} /></button></div></article>;
 }
 
-function DeviceDrawer(props: { device: Device; commands: CommandState[]; onClose: () => void; onCommand: (device: Device, command: CommandKind) => void; busyCommands: Record<string, boolean> }) {
+function DeviceDrawer(props: { onUnbind: () => void; device: Device; commands: CommandState[]; onClose: () => void; onCommand: (device: Device, command: CommandKind) => void; busyCommands: Record<string, boolean> }) {
   const online = isOnline(props.device.status);
-  return <div className="drawer-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) props.onClose(); }}><aside className="device-drawer"><div className="drawer-top"><span>DEVICE DETAILS</span><button className="icon-button" onClick={props.onClose} aria-label="关闭"><X size={18} /></button></div><div className="drawer-device"><span className={`device-icon big ${online ? 'online' : ''}`}>{deviceIcon(props.device.platform)}</span><div><h2>{props.device.name || props.device.id}</h2><span className="mono">{props.device.id}</span></div><StatusBadge status={online ? 'online' : 'offline'} /></div><div className="drawer-details"><div><span>平台</span><b>{props.device.platform || 'API 未提供'}</b></div><div><span>应用版本</span><b>{props.device.appVersion || 'API 未提供'}</b></div><div><span>最近心跳</span><b title={props.device.lastSeen}>{relativeTime(props.device.lastSeen)}</b><small>{formatDate(props.device.lastSeen)}</small></div><div><span>策略绑定</span><b>{props.device.policyId ? `v${props.device.policyVersion ?? '—'}` : '未分配'}</b><small>{props.device.policyId || '暂无策略 ID'}</small></div></div><div className="drawer-section"><div className="drawer-section-head"><b>远程控制</b><span>每个操作都会创建真实命令并轮询回执</span></div><div className="drawer-actions"><CommandAction icon={<RefreshCw size={16} />} label="立即同步" hint="请求设备立即上报状态" command="sync" device={props.device} onCommand={props.onCommand} busy={props.busyCommands[`${props.device.id}:sync`]} /><CommandAction icon={<LockKeyhole size={16} />} label="远程锁定" hint="向设备发送锁定命令" command="lock" device={props.device} onCommand={props.onCommand} busy={props.busyCommands[`${props.device.id}:lock`]} danger /><CommandAction icon={<LockKeyhole size={16} />} label="解除限制" hint="向设备发送解除命令" command="unlock" device={props.device} onCommand={props.onCommand} busy={props.busyCommands[`${props.device.id}:unlock`]} /></div></div><div className="drawer-section command-history"><div className="drawer-section-head"><b>命令状态</b><span>{props.commands.length} 条服务器记录</span></div>{props.commands.length === 0 ? <div className="drawer-empty">API 尚未返回该设备的命令记录。</div> : <div className="command-timeline">{props.commands.slice(0, 8).map((command) => <div className="command-item" key={command.id}><span className={`timeline-dot ${statusTone(command.status)}`} /><div><div className="command-item-head"><b>{commandLabel(command.kind)}</b><StatusBadge status={command.status} /></div><small>{formatDate(command.updatedAt || command.createdAt)} · ID {command.id}</small>{command.error && <p>{command.error}</p>}</div></div>)}</div>}</div><div className="drawer-note"><AlertCircle size={15} />命令状态只在 API 返回 pending、delivered、executed、failed 或 expired 后更新。</div></aside></div>;
+  return <div className="drawer-layer" onMouseDown={(event) => { if (event.target === event.currentTarget) props.onClose(); }}><aside className="device-drawer"><div className="drawer-top"><span>DEVICE DETAILS</span><button className="icon-button" onClick={props.onClose} aria-label="关闭"><X size={18} /></button></div><div className="drawer-device"><span className={`device-icon big ${online ? 'online' : ''}`}>{deviceIcon(props.device.platform)}</span><div><h2>{props.device.name || props.device.id}</h2><span className="mono">{props.device.id}</span></div><StatusBadge status={online ? 'online' : 'offline'} /></div><div className="drawer-details"><div><span>平台</span><b>{props.device.platform || 'API 未提供'}</b></div><div><span>应用版本</span><b>{props.device.appVersion || 'API 未提供'}</b></div><div><span>最近心跳</span><b title={props.device.lastSeen}>{relativeTime(props.device.lastSeen)}</b><small>{formatDate(props.device.lastSeen)}</small></div><div><span>策略绑定</span><b>{props.device.policyId ? `v${props.device.policyVersion ?? '—'}` : '未分配'}</b><small>{props.device.policyId || '暂无策略 ID'}</small></div></div><div className="drawer-section"><div className="drawer-section-head"><b>远程控制</b><span>每个操作都会创建真实命令并轮询回执</span></div><div className="drawer-actions"><CommandAction icon={<RefreshCw size={16} />} label="立即同步" hint="请求设备立即上报状态" command="sync" device={props.device} onCommand={props.onCommand} busy={props.busyCommands[`${props.device.id}:sync`]} /><CommandAction icon={<LockKeyhole size={16} />} label="远程锁定" hint="向设备发送锁定命令" command="lock" device={props.device} onCommand={props.onCommand} busy={props.busyCommands[`${props.device.id}:lock`]} danger /><CommandAction icon={<LockKeyhole size={16} />} label="解除限制" hint="向设备发送解除命令" command="unlock" device={props.device} onCommand={props.onCommand} busy={props.busyCommands[`${props.device.id}:unlock`]} /></div></div><div className="drawer-section command-history"><div className="drawer-section-head"><b>命令状态</b><span>{props.commands.length} 条服务器记录</span></div>{props.commands.length === 0 ? <div className="drawer-empty">API 尚未返回该设备的命令记录。</div> : <div className="command-timeline">{props.commands.slice(0, 8).map((command) => <div className="command-item" key={command.id}><span className={`timeline-dot ${statusTone(command.status)}`} /><div><div className="command-item-head"><b>{commandLabel(command.kind)}</b><StatusBadge status={command.status} /></div><small>{formatDate(command.updatedAt || command.createdAt)} · ID {command.id}</small>{command.error && <p>{command.error}</p>}</div></div>)}</div>}</div><div className="drawer-note"><AlertCircle size={15} />命令状态只在 API 返回 pending、delivered、executed、failed 或 expired 后更新。</div><div className="drawer-section unbind-section"><div><b>移除此设备</b><p>停止同步与远程控制。</p></div><button type="button" className="danger-button" onClick={props.onUnbind}>解绑设备</button></div></aside></div>;
+}
+
+function UnbindDialog(props: { device: Device; onClose: () => void; onConfirm: () => Promise<void> }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const inFlight = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const node = dialog.current;
+    node?.showModal();
+    return () => { node?.close(); };
+  }, []);
+  async function confirm() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setError('');
+    try { await props.onConfirm(); }
+    catch (cause) { setError(errorMessage(cause, '暂未收到解绑结果，请刷新设备列表核对。')); }
+    finally { inFlight.current = false; setBusy(false); }
+  }
+  return <dialog ref={dialog} className="modal unbind-dialog" aria-labelledby="unbind-title" onCancel={(event) => { event.preventDefault(); if (!inFlight.current) props.onClose(); }}>
+    <h2 id="unbind-title">解绑 {props.device.name || props.device.id}？</h2>
+    <p>旧凭证会立即失效，未完成的命令将过期。设备需用新的配对码重新连接；服务器历史记录和策略本身不会删除。</p>
+    {error && <p role="alert" className="unbind-error">{error}</p>}
+    <div className="unbind-actions"><button type="button" autoFocus className="secondary-button" disabled={busy} onClick={props.onClose}>取消</button><button type="button" className="danger-button" disabled={busy} onClick={() => void confirm()}>{busy ? '正在解绑…' : '确认解绑'}</button></div>
+  </dialog>;
 }
 
 function CommandAction(props: { icon: ReactNode; label: string; hint: string; command: CommandKind; device: Device; onCommand: (device: Device, command: CommandKind) => void; busy?: boolean; danger?: boolean }) {

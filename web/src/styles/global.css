@@ -487,3 +487,32 @@ button, input, select, textarea { outline: none; }
   .pairing-code-meta { align-items: flex-start; flex-direction: column; }
   .pairing-code-meta .secondary-button { width: 100%; }
 }
+
+/* Shared visual language with the Android app: ink, jade and quiet surfaces. */
+:root {
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --canvas: #eef4f0;
+  --line: #d9e6df;
+  --rail: #112923;
+  --rail-2: #1a3b31;
+  --shadow: 0 12px 32px #173f2d0e;
+}
+.topbar { background: #ffffff; border-bottom-color: var(--line); }
+.panel, .metric, .policy-card { border-radius: 20px; box-shadow: var(--shadow); }
+.brand-mark, .workspace-switch, .nav-item, .connection-card { border-radius: 13px; }
+.primary-button, .secondary-button, .icon-button, .command-action { border-radius: 12px; }
+.heading-actions { flex-wrap: wrap; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #20845f; outline-offset: 3px; }
+.drawer-section.unbind-section { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid #f2d5d8; border-radius: 16px; background: #fff7f7; }
+.unbind-section p { margin: 4px 0 0; font-size: .85rem; color: #66464b; }
+.danger-button { background: #981f36; color: #fff; border: 0; border-radius: 12px; padding: 10px 14px; min-height: 42px; font-weight: 650; flex-shrink: 0; }
+.danger-button:hover:not(:disabled) { background: #771529; }
+.unbind-dialog { position: fixed; inset: 0; margin: auto; width: min(calc(100vw - 32px), 420px); max-height: calc(100dvh - 32px); overflow: auto; border-radius: 20px; border: 1px solid var(--line); padding: 24px; background: var(--surface); color: var(--ink); }
+.unbind-dialog::backdrop { background: #0c231cc4; }
+.unbind-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.unbind-dialog .unbind-error { color: #981f36; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+.metric-label { color: #475e53; font-size: 11px; }
+.metric small { color: #53695f; font-size: 11px; }
+.metric-icon { border-radius: 10px; }
+.device-name small, .device-connection small, .device-policy small { color: #54695f; }

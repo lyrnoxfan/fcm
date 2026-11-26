@@ -112,12 +112,13 @@ fun DashboardScreen(
     val policyIndex = 5 + if (message == null) 0 else 1
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text("FocusGuard", fontWeight = FontWeight.SemiBold)
-                        Text("设备专注控制", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("使用时长 · 设备管理", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
             )
@@ -278,7 +279,7 @@ private fun SyncCard(
     onPair: () -> Unit,
     onSyncNow: () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(!paired) }
+    var expanded by remember(paired) { mutableStateOf(!paired) }
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SectionHeader("设备同步", if (paired) "已配对" else "未配对", expanded) { expanded = !expanded }
@@ -290,7 +291,7 @@ private fun SyncCard(
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 DetailLine("API", baseUrl.ifBlank { "未配置" })
-                DetailLine("状态", syncState?.syncLabel() ?: if (paired) "待同步" else "未配置")
+                DetailLine("状态", if (paired) syncState?.syncLabel() ?: "待同步" else "未配对")
             }
             lastSyncAtMillis?.let {
                 Text("最后同步：${formatTimestamp(it, zoneId)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
