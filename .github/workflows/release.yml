@@ -46,6 +46,7 @@ jobs:
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
           ls -lh "$APK"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "FocusGuard $TAG" --generate-notes
           gh release upload "$TAG" "$APK" --clobber
       # NOTE: no upload-artifact step on purpose - the account Actions
       # artifact storage quota (2 GB) is full, and the Release itself
