@@ -1,0 +1,1 @@
+{"description":"FocusGuard API self-hosted on a plain Linux box (Node 24 + node:sqlite). No dependencies.","name":"focusguard-server","private":true,"scripts":{"start":"node server.mjs"},"type":"module","version":"1.0.6"}
