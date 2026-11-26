@@ -50,6 +50,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -504,7 +505,8 @@ private fun AppLimitRow(
 
 @Composable
 private fun LimitField(label: String, value: String, onValueChanged: (String) -> Unit, modifier: Modifier = Modifier) {
-    val invalid = value.isNotBlank() && (value.toLongOrNull() == null || value.toLongOrNull() !in 1..525_600)
+    val parsed = value.toLongOrNull()
+    val invalid = value.isNotBlank() && (parsed == null || parsed !in 1..525_600)
     OutlinedTextField(
         value = value,
         onValueChange = { next -> if (next.isEmpty() || next.all(Char::isDigit)) onValueChanged(next) },
@@ -572,7 +574,7 @@ private fun String.toCommandLabel(): String = when (this) {
 
 private fun formatMinutes(minutes: Long): String = when {
     minutes >= 60L -> "${minutes / 60}小时 ${minutes % 60}分钟"
-    else -> "$minutes分钟"
+    else -> "${minutes}分钟"
 }
 
 private fun formatTimestamp(millis: Long, zoneId: String): String = runCatching {
