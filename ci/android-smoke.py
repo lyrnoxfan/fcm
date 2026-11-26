@@ -17,6 +17,9 @@ SERVICE = f'{APP}/.enforcement.PolicyAccessibilityService'
 BLOCKED = f'{APP}/.enforcement.BlockedActivity'
 ROOT = Path(os.environ['RUNNER_TEMP']) / 'focusguard-smoke'
 BASE = 'http://127.0.0.1:18787'
+# The backend's last device row can be stale after a force-stop. Count only
+# successful live heartbeats reporting an actually connected service.
+connected_heartbeats = []
 
 
 def adb(*args, check=True):
@@ -225,9 +228,14 @@ def scenarios():
         return devices[0]['id'] if devices and devices[0]['accessibility_enabled'] == 1 else None
     device = wait_for(paired, 'Android automatically registers and reports active Accessibility', 50)
     print('PASS: app automatically registered over fixture HTTP; native device heartbeat received')
-    shell('am', 'force-stop', APP); launch_main()
+    shell('am', 'force-stop', APP)
+    heartbeat_count = len(connected_heartbeats)
+    launch_main()
     wait_for(lambda: len(api('/api/v1/devices', token=token)) == 1 and api('/api/v1/devices', token=token)[0]['id'] == device, 'restart retains same device')
     print('PASS: restarting app retains the same device identity without duplicates')
+    wait_for(lambda: len(connected_heartbeats) > heartbeat_count,
+             'fresh heartbeat reports Accessibility service connected after force-stop and reopen', 60)
+    print('PASS: service reconnected after force-stop and reopen')
 
     def command(kind):
         cmd = api('/api/v1/commands', 'POST', {'device_id': device, 'command': kind, 'expires_in': 180}, token, 201)['id']
@@ -308,9 +316,16 @@ class FixtureProxy(BaseHTTPRequestHandler):
         incoming = {k: v for k, v in self.headers.items() if k.lower() not in {'host', 'connection'}}
         try:
             size = int(self.headers.get('Content-Length', '0'))
-            upstream.request(self.command, self.path, body=self.rfile.read(size) if size else None, headers=incoming)
+            request_body = self.rfile.read(size) if size else None
+            upstream.request(self.command, self.path, body=request_body, headers=incoming)
             response = upstream.getresponse()
             data = response.read()
+            if self.command == 'POST' and self.path.endswith('/heartbeat') and response.status == 200:
+                try:
+                    if json.loads(request_body or b'{}').get('accessibilityEnabled') is True:
+                        connected_heartbeats.append(time.monotonic())
+                except (ValueError, TypeError):
+                    pass
             self.send_response(response.status)
             for k, v in response.getheaders():
                 if k.lower() not in {'server', 'date', 'transfer-encoding', 'content-length', 'connection'}:
@@ -349,8 +364,9 @@ with (ROOT / 'worker.log').open('w') as log:
         sections = [line.strip() for line in service_state.splitlines()
                     if 'boundServices' in line or 'bindingServices' in line or 'enabledServices' in line
                     or SERVICE in line]
-        print('Accessibility service state:', '\n'.join(sections)[-4000:], flush=True)
-        print('Emulator app diagnostics:', adb('logcat', '-d', '-t', '2500', 'AndroidRuntime:E', 'FocusGuard:I', '*:S', check=False)[-3500:], flush=True)
+        print('Accessibility service state:', ('\n'.join(sections) or service_state)[-8000:], flush=True)
+        diag = subprocess.run(['adb', 'logcat', '-d', '-s', 'FocusGuard:I', 'AndroidRuntime:E'], text=True, capture_output=True, timeout=30)
+        print('Emulator app diagnostics:', (diag.stdout + diag.stderr)[-10000:], flush=True)
         activity_log = adb('logcat', '-d', '-t', '2500', 'ActivityTaskManager:I', '*:S', check=False)
         relevant = [line for line in activity_log.splitlines()
                     if APP in line or 'background activity' in line.lower() or 'BAL_' in line]
