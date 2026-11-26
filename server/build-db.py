@@ -30,7 +30,12 @@ for name in sorted(f for f in os.listdir(mig_dir) if f.endswith(".sql")):
 with gzip.open(dump_path, "rt", encoding="utf-8") as f:
     dump = json.load(f)
 
+existing = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 for table, rows in dump["tables"].items():
+    if table not in existing:
+        # e.g. d1_migrations is wrangler bookkeeping, not part of the schema.
+        print(table, "no such table in schema (skipped)")
+        continue
     if not rows:
         print(table, "0 rows (skipped)")
         continue
