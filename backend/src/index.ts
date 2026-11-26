@@ -21,7 +21,7 @@ const digest = async (value: string): Promise<string> => bytesToB64(new Uint8Arr
 async function hashPassword(password: string, salt?: Uint8Array): Promise<{ salt: string; hash: string }> {
   const actualSalt = salt ?? crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: actualSalt as unknown as BufferSource, iterations: 120000, hash: "SHA-256" }, key, 256);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: actualSalt as unknown as BufferSource, iterations: 100000, hash: "SHA-256" }, key, 256);
   return { salt: bytesToB64(actualSalt), hash: bytesToB64(new Uint8Array(bits)) };
 }
 async function verifyPassword(password: string, salt: string, expected: string): Promise<boolean> { return constantTimeEqual((await hashPassword(password, b64ToBytes(salt))).hash, expected); }
