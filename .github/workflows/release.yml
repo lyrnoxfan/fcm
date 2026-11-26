@@ -47,7 +47,6 @@ jobs:
           APK=android/app/build/outputs/apk/release/app-release.apk
           ls -lh "$APK"
           gh release upload "$TAG" "$APK" --clobber
-      - uses: actions/upload-artifact@v4
-        with:
-          name: focusguard-release-apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+      # NOTE: no upload-artifact step on purpose - the account Actions
+      # artifact storage quota (2 GB) is full, and the Release itself
+      # is the distribution point for this APK.
