@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
                 var pairingCode by remember { mutableStateOf("") }
                 var syncBusy by remember { mutableStateOf(false) }
                 var syncState by remember { mutableStateOf<SyncState?>(null) }
+                 var foregroundSyncEnabled by remember { mutableStateOf(false) }
                 var paired by remember { mutableStateOf(false) }
                 var lastSyncAtMillis by remember { mutableStateOf<Long?>(null) }
                 var lastSyncError by remember { mutableStateOf<String?>(null) }
@@ -87,6 +88,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     syncSettings.settings.collectLatest { settings ->
                         syncBaseUrl = settings.baseUrl
+                         foregroundSyncEnabled = settings.foregroundSyncEnabled
                         lastSyncAtMillis = settings.lastSyncAtMillis
                         lastSyncError = settings.lastSyncError
                     }
@@ -163,6 +165,7 @@ class MainActivity : ComponentActivity() {
                     lastSyncError = lastSyncError,
                     recentCommands = recentCommands,
                     syncState = syncState,
+                     foregroundSyncEnabled = foregroundSyncEnabled,
                     message = message,
                     appLimitValue = { packageName ->
                         appLimitInputs[packageName] ?: policy.limits.firstOrNull {
@@ -181,7 +184,9 @@ class MainActivity : ComponentActivity() {
                                 pairingCode = ""
                                 message = "设备已配对，令牌已保存到 Android Keystore。"
                                 syncState = coordinator.sync(accessibilityEnabled = accessibilityEnabled)
-                                SyncScheduler.requestNow(this@MainActivity)
+                                foregroundSyncEnabled = true
+                                 syncSettings.setForegroundSyncEnabled(true)
+                                 SyncScheduler.requestNow(this@MainActivity)
                             } catch (error: Exception) {
                                 message = "设备配对失败：${error.localizedMessage ?: error.javaClass.simpleName}"
                             } finally {
@@ -189,7 +194,12 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onSyncNow = {
+                    onForegroundSyncChanged = { enabled ->
+                         foregroundSyncEnabled = enabled
+                         scope.launch { syncSettings.setForegroundSyncEnabled(enabled) }
+                         if (enabled) SyncScheduler.enableForegroundSync(this@MainActivity) else SyncScheduler.disableForegroundSync(this@MainActivity)
+                     },
+                     onSyncNow = {
                         scope.launch {
                             syncBusy = true
                             try {

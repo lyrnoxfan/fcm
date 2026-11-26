@@ -97,13 +97,54 @@ class SyncApiClient(
         }
     }
 
+    /** Uploads usage in bounded requests so a large app list cannot reject the whole sync. */
     fun uploadUsage(deviceId: String, deviceToken: String, rows: List<UsageDailyEntity>, batchId: String = UUID.randomUUID().toString()) {
-        val payload = JSONObject()
-            .put("batchId", batchId)
-            .put("deviceId", deviceId)
-            .put("rows", JSONArray().also { array -> rows.forEach { array.put(rowJson(it)) } })
-        execute("POST", "/api/v1/devices/$deviceId/usage", payload.toString(), deviceToken)
+        val payloadRows = rows.flatMap(::usagePayloadRows)
+        var part = 0
+        var current = mutableListOf<JSONObject>()
+        var expansion = 0
+
+        fun flush() {
+            if (current.isEmpty()) return
+            val payload = JSONObject()
+                .put("batchId", if (part == 0) batchId else "$batchId-$part")
+                .put("deviceId", deviceId)
+                .put("rows", JSONArray().also { array -> current.forEach(array::put) })
+            execute("POST", "/api/v1/devices/$deviceId/usage", payload.toString(), deviceToken)
+            part += 1
+            current = mutableListOf()
+            expansion = 0
+        }
+
+        payloadRows.forEach { row ->
+            val rowExpansion = 1 + row.optJSONObject("appForeground")?.length().orZero()
+            if (current.isNotEmpty() && expansion + rowExpansion > MAX_USAGE_EXPANSION) flush()
+            current += row
+            expansion += rowExpansion
+        }
+        flush()
     }
+
+    private fun usagePayloadRows(row: UsageDailyEntity): List<JSONObject> {
+        val entries = runCatching {
+            val apps = JSONObject(row.appForegroundJson)
+            apps.keys().asSequence().mapNotNull { key ->
+                val millis = apps.optLong(key, -1L)
+                key.takeIf { millis >= 0L }?.let { it to millis }
+            }.toList()
+        }.getOrDefault(emptyList())
+        if (entries.size <= MAX_APPS_PER_PAYLOAD) return listOf(rowJson(row))
+
+        return entries.chunked(MAX_APPS_PER_PAYLOAD).mapIndexed { index, chunk ->
+            val appJson = JSONObject().also { value -> chunk.forEach { (name, millis) -> value.put(name, millis) } }
+            rowJson(row)
+                .put("deviceForegroundMillis", if (index == 0) row.deviceForegroundMillis else 0L)
+                .put("appForeground", appJson)
+                .put("app_foreground", appJson)
+        }
+    }
+
+    private fun Int?.orZero(): Int = this ?: 0
 
     fun pollCommands(deviceId: String, deviceToken: String, cursor: String?): CommandPage {
         val query = cursor?.takeIf { it.isNotBlank() }?.let { "?cursor=${java.net.URLEncoder.encode(it, Charsets.UTF_8.name())}" }.orEmpty()
@@ -121,6 +162,11 @@ class SyncApiClient(
         val payload = JSONObject().put("commandId", commandId).put("status", status)
         detail?.let { payload.put("detail", it).put("error_message", it) }
         execute("POST", "/api/v1/devices/$deviceId/commands/$commandId/ack", payload.toString(), deviceToken)
+    }
+
+    private companion object {
+        const val MAX_USAGE_EXPANSION = 450
+        const val MAX_APPS_PER_PAYLOAD = 400
     }
 
     private fun rowJson(row: UsageDailyEntity): JSONObject = JSONObject()

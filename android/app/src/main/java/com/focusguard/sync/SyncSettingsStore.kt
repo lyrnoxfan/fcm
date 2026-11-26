@@ -2,6 +2,7 @@ package com.focusguard.sync
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -15,6 +16,7 @@ data class SyncSettings(
     val pairingCode: String?,
     val lastSyncAtMillis: Long?,
     val lastSyncError: String?,
+    val foregroundSyncEnabled: Boolean,
 )
 
 class SyncSettingsStore(private val context: Context) {
@@ -24,6 +26,7 @@ class SyncSettingsStore(private val context: Context) {
             pairingCode = prefs[PAIRING_CODE],
             lastSyncAtMillis = prefs[LAST_SYNC_AT_MILLIS],
             lastSyncError = prefs[LAST_SYNC_ERROR],
+             foregroundSyncEnabled = prefs[FOREGROUND_SYNC_ENABLED] ?: false,
         )
     }
 
@@ -40,6 +43,10 @@ class SyncSettingsStore(private val context: Context) {
         }
     }
 
+    suspend fun setForegroundSyncEnabled(value: Boolean) {
+        context.applicationContext.syncSettingsDataStore.edit { prefs -> prefs[FOREGROUND_SYNC_ENABLED] = value }
+    }
+
     suspend fun recordSync(atMillis: Long, error: String?) {
         context.applicationContext.syncSettingsDataStore.edit { prefs ->
             prefs[LAST_SYNC_AT_MILLIS] = atMillis
@@ -52,6 +59,7 @@ class SyncSettingsStore(private val context: Context) {
         val PAIRING_CODE = stringPreferencesKey("pairing_code")
         val LAST_SYNC_AT_MILLIS = longPreferencesKey("last_sync_at_millis")
         val LAST_SYNC_ERROR = stringPreferencesKey("last_sync_error")
+        val FOREGROUND_SYNC_ENABLED = booleanPreferencesKey("foreground_sync_enabled")
         const val MAX_ERROR_LENGTH = 500
     }
 }

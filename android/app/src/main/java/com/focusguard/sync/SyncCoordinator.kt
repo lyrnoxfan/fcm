@@ -89,7 +89,12 @@ class SyncCoordinator(context: Context) {
                 val daily = database.usageDao().latestDaily()
                 if (daily.isNotEmpty()) {
                     val batchId = "usage-${daily.first().localDate}-${daily.last().localDate}-${daily.maxOf { it.updatedAtMillis }}"
-                    client.uploadUsage(deviceId, credentials.deviceToken, daily, batchId)
+                    runCatching { client.uploadUsage(deviceId, credentials.deviceToken, daily, batchId) }
+                        .onFailure { error ->
+                            // Usage expansion/validation errors must remain visible but must not
+                            // prevent policy fetch or remote command delivery/ACK.
+                            settings.recordSync(System.currentTimeMillis(), error.message ?: "usage upload failed")
+                        }
                 }
             }
             client.fetchPolicy(deviceId, credentials.deviceToken, policyStore.version())?.let { remote ->

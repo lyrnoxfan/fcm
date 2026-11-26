@@ -73,6 +73,8 @@ fun DashboardScreen(
     lastSyncAtMillis: Long?,
     lastSyncError: String?,
     recentCommands: List<SyncCommandEntity>,
+     foregroundSyncEnabled: Boolean,
+     onForegroundSyncChanged: (Boolean) -> Unit,
     syncState: SyncState?,
     message: String?,
     appLimitValue: (String) -> String,
@@ -149,6 +151,8 @@ fun DashboardScreen(
                     paired = paired,
                     syncBusy = syncBusy,
                     syncState = syncState,
+                     foregroundSyncEnabled = foregroundSyncEnabled,
+                     onForegroundSyncChanged = onForegroundSyncChanged,
                     lastSyncAtMillis = lastSyncAtMillis,
                     lastSyncError = lastSyncError,
                     zoneId = zoneId,
@@ -264,6 +268,8 @@ private fun SyncCard(
     paired: Boolean,
     syncBusy: Boolean,
     syncState: SyncState?,
+    foregroundSyncEnabled: Boolean,
+    onForegroundSyncChanged: (Boolean) -> Unit,
     lastSyncAtMillis: Long?,
     lastSyncError: String?,
     zoneId: String,
@@ -291,6 +297,10 @@ private fun SyncCard(
             }
             lastSyncError?.let {
                 Text("最近错误：$it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            SettingSwitch("连续同步服务（10 秒轮询命令）", foregroundSyncEnabled, onForegroundSyncChanged)
+            if (!foregroundSyncEnabled && paired) {
+                Text("未开启连续同步时，远程锁定只能等待系统周期同步。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             if (expanded) {
                 OutlinedTextField(
