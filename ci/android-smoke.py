@@ -234,6 +234,7 @@ def scenarios():
     def command(kind):
         cmd = api('/api/v1/commands', 'POST', {'device_id': device, 'command': kind, 'expires_in': 180}, token, 201)['id']
         wait_for(lambda: api(f'/api/v1/devices/{device}/commands/{cmd}', token=token)['status'] == 'executed', f'{kind} device ACK', 55)
+        print(f'PASS: device acknowledged {kind} as executed', flush=True)
 
     ordinary = launch_ordinary_app()
     wait_for(lambda: active(ordinary), 'ordinary app is available before lock')
@@ -346,7 +347,16 @@ with (ROOT / 'worker.log').open('w') as log:
     except Exception:
         print('Foreground:', current(), flush=True)
         print('UI labels:', [n.get('text') for n in nodes() if n.get('text')], flush=True)
-        print('Emulator app diagnostics:', adb('logcat', '-d', '-t', '250', 'AndroidRuntime:E', 'FocusGuard:W', '*:S')[-3500:], flush=True)
+        service_state = adb('shell', 'dumpsys', 'accessibility', check=False)
+        sections = [line.strip() for line in service_state.splitlines()
+                    if 'boundServices' in line or 'bindingServices' in line or 'enabledServices' in line
+                    or SERVICE in line]
+        print('Accessibility service state:', '\n'.join(sections)[-4000:], flush=True)
+        print('Emulator app diagnostics:', adb('logcat', '-d', '-t', '2500', 'AndroidRuntime:E', 'FocusGuard:I', '*:S', check=False)[-3500:], flush=True)
+        activity_log = adb('logcat', '-d', '-t', '2500', 'ActivityTaskManager:I', '*:S', check=False)
+        relevant = [line for line in activity_log.splitlines()
+                    if APP in line or 'background activity' in line.lower() or 'BAL_' in line]
+        print('Activity launch diagnostics:', '\n'.join(relevant)[-3500:], flush=True)
         print((ROOT / 'worker.log').read_text()[-5000:], flush=True)
         raise
     finally:
