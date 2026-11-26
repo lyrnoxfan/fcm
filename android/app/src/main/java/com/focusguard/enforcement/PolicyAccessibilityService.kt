@@ -7,6 +7,7 @@ import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import com.focusguard.core.PolicyEngine
 import com.focusguard.usage.UsageRepository
+import com.focusguard.sync.SyncCoordinator
 import java.time.ZonedDateTime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,10 +23,17 @@ class PolicyAccessibilityService : AccessibilityService() {
     private val repository by lazy { UsageRepository(this) }
     private var foregroundPackage: String? = null
     private val restrictionVisible = AtomicBoolean(false)
+    private val syncInFlight = AtomicBoolean(false)
 
     private val reevaluate = object : Runnable {
         override fun run() {
             if (!restrictionVisible.get()) foregroundPackage?.let(::evaluatePackage)
+            if (syncInFlight.compareAndSet(false, true)) {
+                serviceScope.launch {
+                    try { SyncCoordinator(this@PolicyAccessibilityService).sync(accessibilityEnabled = true) }
+                    finally { syncInFlight.set(false) }
+                }
+            }
             handler.postDelayed(this, EVALUATION_INTERVAL_MS)
         }
     }

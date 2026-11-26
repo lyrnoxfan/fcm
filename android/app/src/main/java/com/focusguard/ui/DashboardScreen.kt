@@ -63,6 +63,7 @@ fun DashboardScreen(
     onSyncBaseUrlChanged: (String) -> Unit,
     onPairingCodeChanged: (String) -> Unit,
     onPairDevice: () -> Unit,
+     onSyncNow: () -> Unit,
     onOpenUsageSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onRefreshPermission: () -> Unit,
@@ -119,6 +120,7 @@ fun DashboardScreen(
                     onBaseUrlChanged = onSyncBaseUrlChanged,
                     onPairingCodeChanged = onPairingCodeChanged,
                     onPair = onPairDevice,
+                     onSyncNow = onSyncNow,
                 )
             }
 
@@ -222,6 +224,7 @@ private fun SyncCard(
     onBaseUrlChanged: (String) -> Unit,
     onPairingCodeChanged: (String) -> Unit,
     onPair: () -> Unit,
+    onSyncNow: () -> Unit,
 ) {
     Card {
         Column(
@@ -259,7 +262,14 @@ private fun SyncCard(
                 }
                 Text(if (syncBusy) "配对中…" else "配对设备")
             }
-            syncState?.let {
+            OutlinedButton(
+                 enabled = !syncBusy && baseUrl.isNotBlank(),
+                 onClick = onSyncNow,
+                 modifier = Modifier.fillMaxWidth(),
+             ) {
+                 Text(if (syncBusy) "同步中…" else "立即同步")
+             }
+             syncState?.let {
                 Text(
                     "当前同步状态：${it.label()}",
                     style = MaterialTheme.typography.bodySmall,

@@ -234,13 +234,14 @@ export default function ConsoleApp() {
 
   async function pollCommand(deviceId: string, commandId: string) {
     const terminal = new Set(['completed', 'failed', 'cancelled', 'success', 'error', 'executed', 'expired']);
-    for (let attempt = 0; attempt < 8; attempt += 1) {
+    const successful = new Set(['completed', 'success', 'executed']);
+    for (let attempt = 0; attempt < 30; attempt += 1) {
       try {
         const result = await request<unknown>(config, `${API_PATHS.devices}/${encodeURIComponent(deviceId)}/commands/${encodeURIComponent(commandId)}`);
         const next = { ...normalizeCommand(result), deviceId };
         setCommands((current) => ({ ...current, [commandId]: next }));
         if (terminal.has(next.status.toLowerCase())) {
-          notify(next.status.toLowerCase() === 'completed' || next.status.toLowerCase() === 'success' ? 'success' : 'error', `命令状态：${next.status}`);
+          notify(successful.has(next.status.toLowerCase()) ? 'success' : 'error', next.error ? `命令状态：${next.status}，${next.error}` : `命令状态：${next.status}`);
           return;
         }
       } catch (error) {

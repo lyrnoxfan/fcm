@@ -26,17 +26,20 @@ import com.focusguard.data.UsageDailyEntity
 import com.focusguard.sync.SyncCoordinator
 import com.focusguard.sync.SyncScheduler
 import com.focusguard.sync.SyncState
+import com.focusguard.sync.SyncSettingsStore
 import com.focusguard.ui.DashboardScreen
 import com.focusguard.usage.UsageRepository
 import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val repository by lazy { UsageRepository(this) }
+    private val syncSettings by lazy { SyncSettingsStore(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,6 +77,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
+                    syncBaseUrl = syncSettings.settings.first().baseUrl
                     try {
                         policy = repository.loadPolicy()
                         dailyLimitMinutes = policy.limits.firstOrNull { it.target.isDevice && it.period == UsagePeriod.DAY }
@@ -156,7 +160,19 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onOpenUsageSettings = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
+                    onSyncNow = {
+                         scope.launch {
+                             syncBusy = true
+                             syncState = SyncCoordinator(this@MainActivity).sync(accessibilityEnabled = accessibilityEnabled)
+                             message = when (val state = syncState) {
+                                 is SyncState.ServerError -> "同步失败：${state.message}"
+                                 is SyncState.NetworkError -> "同步失败：${state.message}"
+                                 else -> "同步状态：${state?.javaClass?.simpleName ?: "未知"}"
+                             }
+                             syncBusy = false
+                         }
+                     },
+                     onOpenUsageSettings = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
                     onOpenAccessibilitySettings = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                     onRefreshPermission = {
                         hasPermission = repository.hasUsageAccess()
