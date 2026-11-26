@@ -2,7 +2,7 @@ name = "focusguard-api"
 main = "src/index.ts"
 compatibility_date = "2025-09-06"
 
-routes = [{ pattern = "api.fcm.lyrnox.com", custom_domain = true }]
+routes = [{ pattern = "api-fcm.lyrnox.com", custom_domain = true }]
 
 [[d1_databases]]
 binding = "DB"
