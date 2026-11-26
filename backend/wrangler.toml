@@ -2,11 +2,10 @@ name = "focusguard-api"
 main = "src/index.ts"
 compatibility_date = "2025-09-06"
 
+routes = [{ pattern = "api.fcm.lyrnox.com", custom_domain = true }]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "focusguard"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "e934715f-0b53-4f9a-9fcc-8ece7d8c5f10"
 migrations_dir = "migrations"
-
-[vars]
-# Set with: wrangler secret put AUTH_TOKEN
