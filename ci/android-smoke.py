@@ -235,9 +235,20 @@ def scenarios():
     launch_main()
     wait_for(lambda: len(api('/api/v1/devices', token=token)) == 1 and api('/api/v1/devices', token=token)[0]['id'] == device, 'restart retains same device')
     print('PASS: restarting app retains the same device identity without duplicates')
-    wait_for(lambda: len(connected_heartbeats) > heartbeat_count,
-             'fresh heartbeat reports Accessibility service connected after force-stop and reopen', 60)
-    print('PASS: service reconnected after force-stop and reopen')
+    force_stop_reconnected = True
+    try:
+        wait_for(lambda: len(connected_heartbeats) > heartbeat_count,
+                 'fresh heartbeat reports Accessibility service connected after force-stop and reopen', 60)
+        print('PASS: service reconnected after force-stop and reopen')
+    except AssertionError:
+        force_stop_reconnected = False
+        print('FAIL: Accessibility did not reconnect after force-stop and reopen; enabled setting:',
+              shell('settings', 'get', 'secure', 'enabled_accessibility_services'), flush=True)
+        print('FIXTURE: explicitly re-enable Accessibility to test remaining scenarios; force-stop test remains failed', flush=True)
+        seed_grants(False); seed_grants(True)
+        heartbeat_count = len(connected_heartbeats)
+        wait_for(lambda: len(connected_heartbeats) > heartbeat_count,
+                 'fresh connected heartbeat after explicit fixture re-enable', 60)
 
     def command(kind):
         cmd = api('/api/v1/commands', 'POST', {'device_id': device, 'command': kind, 'expires_in': 180}, token, 201)['id']
@@ -307,6 +318,8 @@ def scenarios():
     time.sleep(3)
     assert not api('/api/v1/devices', token=token), 'unbound device unexpectedly registered again'
     print('PASS: server unbind clears device pairing and remote restriction on actual Android app')
+    if not force_stop_reconnected:
+        raise AssertionError('Accessibility failed to reconnect after force-stop; remaining checks used an explicit fixture re-enable')
 
 
 class FixtureProxy(BaseHTTPRequestHandler):
