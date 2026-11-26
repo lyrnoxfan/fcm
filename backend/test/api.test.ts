@@ -10,7 +10,7 @@ beforeAll(async () => {
     PRAGMA foreign_keys = ON;
     CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT, password_salt TEXT, password_hash TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
-    CREATE TABLE devices (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, platform TEXT NOT NULL, app_version TEXT, last_seen_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+    CREATE TABLE devices (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, platform TEXT NOT NULL, app_version TEXT, last_seen_at TEXT, last_sync_at TEXT, usage_access_granted INTEGER, accessibility_enabled INTEGER, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     CREATE TABLE device_pairing_codes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, code_hash TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used_at TEXT, device_id TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     CREATE TABLE device_tokens (id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, revoked_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     CREATE TABLE policies (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, device_id TEXT REFERENCES devices(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT, enabled INTEGER NOT NULL DEFAULT 1, rules_json TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
@@ -38,7 +38,10 @@ describe("FocusGuard API", () => {
     const code = await (await post("/api/devices/pairing-codes", {}, a.token)).json() as { code: string };
     const paired = await (await post("/api/devices/pair", { code: code.code, name: "Phone", platform: "android" })).json() as { device: { id: string }; device_token: string };
     expect(paired.device_token).toEqual(expect.any(String)); expect((await post("/api/devices/pair", { code: code.code, name: "Again", platform: "android" })).status).toBe(400);
-    expect((await request(`/api/devices/${paired.device.id}/heartbeat`, { method: "POST", headers: { "x-device-token": paired.device_token } })).status).toBe(200);
+    const heartbeat = await request(`/api/devices/${paired.device.id}/heartbeat`, { method: "POST", headers: { "x-device-token": paired.device_token }, body: JSON.stringify({ usageAccessGranted: true, accessibilityEnabled: false }) });
+    expect(heartbeat.status).toBe(200);
+    const ownerDevices = await (await request("/api/devices", { headers: { authorization: `Bearer ${a.token}` } })).json() as Array<{ id: string; usage_access_granted: number; accessibility_enabled: number; last_sync_at: string }>;
+    expect(ownerDevices[0]).toMatchObject({ id: paired.device.id, usage_access_granted: 1, accessibility_enabled: 0 }); expect(ownerDevices[0].last_sync_at).toEqual(expect.any(String));
     expect(await (await request("/api/devices", { headers: { authorization: `Bearer ${b.token}` } })).json()).toEqual([]);
   });
 
@@ -46,9 +49,11 @@ describe("FocusGuard API", () => {
     const auth = await (await post("/api/auth/register", { email: "cmd@example.test", password: "password three" })).json() as { token: string };
     const device = await (await post("/api/devices", { name: "Laptop", platform: "linux" }, auth.token)).json() as { device: { id: string }; device_token: string };
     const headers = { authorization: `Bearer ${auth.token}`, "idempotency-key": "same-command" };
-    const first = await request("/api/commands", { method: "POST", headers, body: JSON.stringify({ device_id: device.device.id, kind: "sync", expires_in: 60 }) }); const command = await first.json() as { id: string; status: string }; expect(first.status).toBe(201); expect(command.status).toBe("pending");
-    const second = await request("/api/commands", { method: "POST", headers, body: JSON.stringify({ device_id: device.device.id, kind: "sync", expires_in: 60 }) }); expect((await second.json() as { id: string }).id).toBe(command.id);
+    const first = await request("/api/commands", { method: "POST", headers, body: JSON.stringify({ device_id: device.device.id, command: "sync", expires_in: 60 }) }); const command = await first.json() as { id: string; status: string; kind: string }; expect(first.status).toBe(201); expect(command.status).toBe("pending"); expect(command.kind).toBe("sync");
+    const second = await request("/api/commands", { method: "POST", headers, body: JSON.stringify({ device_id: device.device.id, command: "sync", expires_in: 60 }) }); expect((await second.json() as { id: string }).id).toBe(command.id);
     const pulled = await request(`/api/devices/${device.device.id}/commands`, { headers: { "x-device-token": device.device_token } }); expect(pulled.status).toBe(200); expect((await pulled.json() as { commands: Array<{ status: string }> }).commands[0].status).toBe("delivered");
+    const deliveryAck = await request(`/api/devices/${device.device.id}/commands/${command.id}/ack`, { method: "POST", headers: { "x-device-token": device.device_token }, body: JSON.stringify({ status: "delivered" }) }); expect(deliveryAck.status).toBe(200);
+    const ownerCommand = await request(`/api/devices/${device.device.id}/commands/${command.id}`, { headers: { authorization: `Bearer ${auth.token}` } }); expect((await ownerCommand.json() as { status: string }).status).toBe("delivered");
     const ack = await post(`/api/devices/${device.device.id}/commands/${command.id}/ack`, { status: "executed" }); expect(ack.status).toBe(401);
     const deviceAck = await request(`/api/devices/${device.device.id}/commands/${command.id}/ack`, { method: "POST", headers: { "x-device-token": device.device_token }, body: JSON.stringify({ status: "executed" }) }); expect(deviceAck.status).toBe(200);
   });

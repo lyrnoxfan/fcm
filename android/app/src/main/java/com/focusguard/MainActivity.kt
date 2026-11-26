@@ -22,7 +22,9 @@ import com.focusguard.core.PolicyConfig
 import com.focusguard.core.UsageLimitRule
 import com.focusguard.core.UsagePeriod
 import com.focusguard.core.UsageTarget
+import com.focusguard.data.SyncCommandEntity
 import com.focusguard.data.UsageDailyEntity
+import com.focusguard.sync.DeviceIdentityStore
 import com.focusguard.sync.SyncCoordinator
 import com.focusguard.sync.SyncScheduler
 import com.focusguard.sync.SyncState
@@ -33,13 +35,13 @@ import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val repository by lazy { UsageRepository(this) }
     private val syncSettings by lazy { SyncSettingsStore(this) }
+    private val identity by lazy { DeviceIdentityStore(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,13 +58,19 @@ class MainActivity : ComponentActivity() {
                 var policy by remember { mutableStateOf(PolicyConfig()) }
                 var dailyLimitMinutes by remember { mutableStateOf("") }
                 val appLimitInputs = remember { mutableStateMapOf<String, String>() }
-                val devicePeriodInputs = remember { mutableStateMapOf(UsagePeriod.WEEK to "", UsagePeriod.MONTH to "") }
+                val devicePeriodInputs = remember {
+                    mutableStateMapOf(UsagePeriod.WEEK to "", UsagePeriod.MONTH to "")
+                }
                 var refreshKey by remember { mutableStateOf(0) }
                 var accessibilityEnabled by remember { mutableStateOf(isPolicyServiceEnabled()) }
                 var syncBaseUrl by remember { mutableStateOf("") }
                 var pairingCode by remember { mutableStateOf("") }
                 var syncBusy by remember { mutableStateOf(false) }
                 var syncState by remember { mutableStateOf<SyncState?>(null) }
+                var paired by remember { mutableStateOf(false) }
+                var lastSyncAtMillis by remember { mutableStateOf<Long?>(null) }
+                var lastSyncError by remember { mutableStateOf<String?>(null) }
+                var recentCommands by remember { mutableStateOf(emptyList<SyncCommandEntity>()) }
                 val scope = rememberCoroutineScope()
 
                 DisposableEffect(this) {
@@ -77,14 +85,33 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
-                    syncBaseUrl = syncSettings.settings.first().baseUrl
+                    syncSettings.settings.collectLatest { settings ->
+                        syncBaseUrl = settings.baseUrl
+                        lastSyncAtMillis = settings.lastSyncAtMillis
+                        lastSyncError = settings.lastSyncError
+                    }
+                }
+
+                LaunchedEffect(Unit) {
+                    identity.credentials.collectLatest { credentials ->
+                        paired = credentials.deviceToken?.isNotBlank() == true
+                    }
+                }
+
+                LaunchedEffect(Unit) {
+                    repository.recentCommands().collectLatest { recentCommands = it }
+                }
+
+                LaunchedEffect(Unit) {
                     try {
                         policy = repository.loadPolicy()
-                        dailyLimitMinutes = policy.limits.firstOrNull { it.target.isDevice && it.period == UsagePeriod.DAY }
-                            ?.limitMillis?.div(60_000)?.toString().orEmpty()
+                        dailyLimitMinutes = policy.limits.firstOrNull {
+                            it.target.isDevice && it.period == UsagePeriod.DAY
+                        }?.limitMillis?.div(60_000)?.toString().orEmpty()
                         listOf(UsagePeriod.WEEK, UsagePeriod.MONTH).forEach { period ->
-                            devicePeriodInputs[period] = policy.limits.firstOrNull { it.target.isDevice && it.period == period }
-                                ?.limitMillis?.div(60_000)?.toString().orEmpty()
+                            devicePeriodInputs[period] = policy.limits.firstOrNull {
+                                it.target.isDevice && it.period == period
+                            }?.limitMillis?.div(60_000)?.toString().orEmpty()
                         }
                     } catch (error: Exception) {
                         message = "读取本地限制规则失败：${error.localizedMessage ?: error.javaClass.simpleName}"
@@ -97,7 +124,7 @@ class MainActivity : ComponentActivity() {
                         try {
                             repository.refreshHistory()
                             apps = withContext(Dispatchers.IO) { listManageableApps() }
-                            message = "使用事件已同步到本机历史库。屏幕亮屏时间不由此数据推算。"
+                            message = "使用事件已同步到本机历史库。"
                         } catch (error: Exception) {
                             message = "读取使用记录失败：${error.localizedMessage ?: error.javaClass.simpleName}"
                         } finally {
@@ -109,11 +136,9 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(hasPermission) {
                     if (hasPermission) {
                         val today = LocalDate.now()
-                        val weekStart = today.minusDays((today.dayOfWeek.value - 1).toLong())
                         val monthStart = today.withDayOfMonth(1)
                         repository.dailyRows(monthStart.toString(), today.toString()).collectLatest { rows ->
                             dailyRows = rows
-                            message = "本地汇总已更新 · 周起始 $weekStart · 月起始 $monthStart"
                         }
                     }
                 }
@@ -133,6 +158,10 @@ class MainActivity : ComponentActivity() {
                     monthlyLimitMinutes = devicePeriodInputs[UsagePeriod.MONTH].orEmpty(),
                     syncBaseUrl = syncBaseUrl,
                     pairingCode = pairingCode,
+                    paired = paired,
+                    lastSyncAtMillis = lastSyncAtMillis,
+                    lastSyncError = lastSyncError,
+                    recentCommands = recentCommands,
                     syncState = syncState,
                     message = message,
                     appLimitValue = { packageName ->
@@ -161,18 +190,21 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onSyncNow = {
-                         scope.launch {
-                             syncBusy = true
-                             syncState = SyncCoordinator(this@MainActivity).sync(accessibilityEnabled = accessibilityEnabled)
-                             message = when (val state = syncState) {
-                                 is SyncState.ServerError -> "同步失败：${state.message}"
-                                 is SyncState.NetworkError -> "同步失败：${state.message}"
-                                 else -> "同步状态：${state?.javaClass?.simpleName ?: "未知"}"
-                             }
-                             syncBusy = false
-                         }
-                     },
-                     onOpenUsageSettings = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
+                        scope.launch {
+                            syncBusy = true
+                            try {
+                                syncSettings.setBaseUrl(syncBaseUrl.trim())
+                                syncState = SyncCoordinator(this@MainActivity)
+                                    .sync(accessibilityEnabled = accessibilityEnabled)
+                                message = syncState?.toUserMessage()
+                            } catch (error: Exception) {
+                                message = "同步失败：${error.localizedMessage ?: error.javaClass.simpleName}"
+                            } finally {
+                                syncBusy = false
+                            }
+                        }
+                    },
+                    onOpenUsageSettings = { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
                     onOpenAccessibilitySettings = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                     onRefreshPermission = {
                         hasPermission = repository.hasUsageAccess()
@@ -209,7 +241,7 @@ class MainActivity : ComponentActivity() {
                                 repository.savePolicy(next)
                                 policy = next
                                 message = if (accessibilityEnabled) {
-                                    "规则已保存；无障碍服务将在下次前台应用切换时评估。"
+                                    "规则已保存；限制执行服务会在前台应用变化或下一次轮询时评估。"
                                 } else {
                                     "规则已保存到本机。开启限制执行权限后，服务才会评估前台应用。"
                                 }
@@ -222,15 +254,19 @@ class MainActivity : ComponentActivity() {
                     },
                     onAppLimitChanged = { packageName, value -> appLimitInputs[packageName] = value },
                     onSaveAppLimit = { packageName ->
-                        val minutes = (appLimitInputs[packageName] ?: "").toLongOrNull()
-                        if (appLimitInputs[packageName].orEmpty().isNotBlank() && (minutes == null || minutes !in 1..525_600)) {
+                        val input = appLimitInputs[packageName].orEmpty()
+                        val minutes = input.toLongOrNull()
+                        if (input.isNotBlank() && (minutes == null || minutes !in 1..525_600)) {
                             message = "应用每日上限需为 1 至 525600 分钟，或留空关闭。"
                             return@DashboardScreen
                         }
                         val label = apps.firstOrNull { it.second == packageName }?.first ?: packageName
-                        val retained = policy.limits.filterNot { it.target.packageName == packageName && it.period == UsagePeriod.DAY }
+                        val retained = policy.limits.filterNot {
+                            it.target.packageName == packageName && it.period == UsagePeriod.DAY
+                        }
                         val next = policy.copy(limits = retained + listOfNotNull(
-                            minutes?.takeIf { it > 0 }?.let { UsageLimitRule(UsageTarget(packageName), UsagePeriod.DAY, it * 60_000) },
+                            minutes?.takeIf { it > 0 }
+                                ?.let { UsageLimitRule(UsageTarget(packageName), UsagePeriod.DAY, it * 60_000) },
                         ))
                         scope.launch {
                             savingAppPackage = packageName
@@ -266,4 +302,16 @@ class MainActivity : ComponentActivity() {
             .distinctBy { it.second }
             .sortedBy { it.first.lowercase() }
     }
+}
+
+private fun SyncState.toUserMessage(): String = when (this) {
+    SyncState.NotConfigured -> "请先配置 API 地址。"
+    SyncState.Unpaired -> "设备尚未配对。"
+    SyncState.Offline -> "设备当前离线，稍后会自动重试。"
+    is SyncState.PermissionRequired -> "同步完成，但仍需补齐使用情况或限制执行权限。"
+    SyncState.Syncing -> "已有同步任务正在执行，本次请求未重复发起。"
+    SyncState.Synced -> "同步完成。"
+    is SyncState.NetworkError -> "同步失败：$message"
+    is SyncState.ServerError -> "同步失败：$message"
+    else -> "同步完成，但命令确认仍待重试。"
 }

@@ -40,6 +40,7 @@ class PolicyAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        activeInstance = this
         handler.removeCallbacks(reevaluate)
         handler.post(reevaluate)
     }
@@ -88,11 +89,29 @@ class PolicyAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         handler.removeCallbacks(reevaluate)
+        if (activeInstance === this) activeInstance = null
         serviceScope.cancel()
         super.onDestroy()
     }
 
+    private fun reevaluateCurrentForeground() {
+        handler.post {
+            val packageName = foregroundPackage ?: return@post
+            // A remote lock/unlock/policy update must not wait for a window event.
+            restrictionVisible.set(false)
+            handler.removeCallbacks(reevaluate)
+            evaluatePackage(packageName)
+            handler.postDelayed(reevaluate, EVALUATION_INTERVAL_MS)
+        }
+    }
+
     companion object {
         private const val EVALUATION_INTERVAL_MS = 5_000L
+        @Volatile private var activeInstance: PolicyAccessibilityService? = null
+
+        /** Called by sync workers/services after a policy or lock command is applied. */
+        fun requestForegroundReevaluation() {
+            activeInstance?.reevaluateCurrentForeground()
+        }
     }
 }

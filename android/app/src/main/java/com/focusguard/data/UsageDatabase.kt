@@ -56,6 +56,9 @@ interface SyncCommandDao {
 
     @Query("UPDATE sync_commands SET status = :status, acknowledgedAtMillis = :acknowledgedAtMillis, detail = :detail WHERE commandId = :commandId")
     suspend fun mark(commandId: String, status: String, acknowledgedAtMillis: Long?, detail: String?)
+
+    @Query("SELECT * FROM sync_commands ORDER BY receivedAtMillis DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<SyncCommandEntity>>
 }
 
 @Dao

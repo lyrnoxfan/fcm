@@ -58,26 +58,31 @@ async function ownsDevice(env: Env, userId: string, deviceId: string): Promise<b
 function deviceHeader(request: Request): boolean { const a = request.headers.get("authorization") ?? ""; return !!(request.headers.get("x-device-token") || a.startsWith("Device ")); }
 
 async function createCommand(env: Env, userId: string, input: Record<string, unknown>, idem: string | null): Promise<Response> {
-  if (!str(input.device_id) || !str(input.kind)) return error(400, "validation_error", "device_id and kind are required");
+  const kind = str(input.kind) ? input.kind : input.command;
+  if (!str(input.device_id) || !str(kind)) return error(400, "validation_error", "device_id and kind are required");
   if (!await ownsDevice(env, userId, input.device_id)) return error(404, "not_found", "Device not found");
   if (idem !== null && !str(idem, 1, 200)) return error(400, "validation_error", "Idempotency-Key is invalid");
   const payload = typeof input.payload_json === "string" ? input.payload_json : JSON.stringify(input.payload ?? input.payload_json ?? {});
   try { const parsed: unknown = JSON.parse(payload); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return error(400, "validation_error", "payload must be a JSON object"); } catch { return error(400, "validation_error", "payload must be valid JSON"); }
-  const fingerprint = await digest(JSON.stringify({ device_id: input.device_id, kind: input.kind, payload, expires_in: input.expires_in ?? null }));
+  const fingerprint = await digest(JSON.stringify({ device_id: input.device_id, kind, payload, expires_in: input.expires_in ?? null }));
   if (idem) {
-    const inserted = await env.DB.prepare("INSERT OR IGNORE INTO commands (id,user_id,device_id,kind,payload_json,status,expires_at,idempotency_key,request_fingerprint) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *").bind(id(), userId, input.device_id, input.kind, payload, "pending", expiresAt(input.expires_in), idem, fingerprint).first<Record<string, unknown>>();
+    const inserted = await env.DB.prepare("INSERT OR IGNORE INTO commands (id,user_id,device_id,kind,payload_json,status,expires_at,idempotency_key,request_fingerprint) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *").bind(id(), userId, input.device_id, kind, payload, "pending", expiresAt(input.expires_in), idem, fingerprint).first<Record<string, unknown>>();
     if (inserted) return json(clean(inserted), 201);
     const old = await env.DB.prepare("SELECT * FROM commands WHERE user_id=? AND idempotency_key=?").bind(userId, idem).first<Record<string, unknown>>();
     if (!old) return error(409, "idempotency_conflict", "Idempotency request could not be resolved");
     return old.request_fingerprint === fingerprint ? json(clean(old)) : error(409, "idempotency_conflict", "Idempotency key was used for another request");
   }
-  const result = await env.DB.prepare("INSERT INTO commands (id,user_id,device_id,kind,payload_json,status,expires_at) VALUES (?,?,?,?,?,?,?) RETURNING *").bind(id(), userId, input.device_id, input.kind, payload, "pending", expiresAt(input.expires_in)).first<Record<string, unknown>>();
+  const result = await env.DB.prepare("INSERT INTO commands (id,user_id,device_id,kind,payload_json,status,expires_at) VALUES (?,?,?,?,?,?,?) RETURNING *").bind(id(), userId, input.device_id, kind, payload, "pending", expiresAt(input.expires_in)).first<Record<string, unknown>>();
   return json(clean(result), 201);
 }
 
 async function ackCommand(env: Env, commandId: string, deviceId: string, status: string, message: unknown): Promise<Response> {
   if (!["delivered", "executed", "failed"].includes(status)) return error(400, "validation_error", "status must be delivered, executed or failed");
-  const result = await env.DB.prepare("UPDATE commands SET status=?,error_message=?,delivery_lease_until=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND device_id=? AND status='delivered' AND (delivery_lease_until IS NULL OR delivery_lease_until>strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *").bind(status, str(message) ? message : null, commandId, deviceId).first<Record<string, unknown>>();
+  // A delivery acknowledgement is non-terminal: keep a lease so a device that
+  // crashed before applying the command can receive it again. Only executed or
+  // failed acknowledgements clear the lease.
+  const lease = status === "delivered" ? new Date(Date.now() + 30_000).toISOString() : null;
+  const result = await env.DB.prepare("UPDATE commands SET status=?,error_message=?,delivery_lease_until=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND device_id=? AND status='delivered' AND (delivery_lease_until IS NULL OR delivery_lease_until>strftime('%Y-%m-%dT%H:%M:%fZ','now')) RETURNING *").bind(status, str(message) ? message : null, lease, commandId, deviceId).first<Record<string, unknown>>();
   return result ? json(clean(result)) : error(409, "ack_expired", "Command delivery lease expired or command is no longer deliverable");
 }
 
@@ -116,10 +121,19 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (parts[0] === "devices" && parts.length === 2 && parts[1] === "pair" && method === "POST") {
     const input = await body(request); const code = input?.code ?? input?.pairing_code; if (!input || !str(code, 6, 12) || !str(input.name) || !str(input.platform)) return error(400, "validation_error", "code, name and platform are required"); const pair = await env.DB.prepare("SELECT * FROM device_pairing_codes WHERE code_hash=? AND used_at IS NULL AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(await digest(code)).first<Record<string, unknown>>(); if (!pair) return error(400, "invalid_pairing_code", "Pairing code is invalid or expired"); const deviceId = String(pair.id); const token = await randomToken(); try { await env.DB.batch([env.DB.prepare("INSERT INTO devices (id,user_id,name,platform,app_version) VALUES (?,?,?,?,?)").bind(deviceId, pair.user_id, input.name, input.platform, str(input.app_version) ? input.app_version : null), env.DB.prepare("INSERT INTO device_tokens (id,device_id,token_hash) VALUES (?,?,?)").bind(id(), deviceId, await digest(token)), env.DB.prepare("UPDATE device_pairing_codes SET used_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND used_at IS NULL AND expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')").bind(pair.id)]); } catch { return error(400, "invalid_pairing_code", "Pairing code is invalid or expired"); } return json({ device: { id: deviceId, user_id: pair.user_id, name: input.name, platform: input.platform, app_version: input.app_version ?? null }, device_token: token }, 201);
   }
-  if (parts[0] === "devices" && parts.length === 3 && parts[2] === "heartbeat" && method === "POST" && deviceHeader(request)) { const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device"); const input = await body(request) ?? {}; await env.DB.prepare("UPDATE devices SET last_seen_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),app_version=COALESCE(?,app_version),updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND user_id=?").bind(str(input.app_version) ? input.app_version : null, da.deviceId, da.userId).run(); return json({ ok: true, device_id: da.deviceId }); }
+  if (parts[0] === "devices" && parts.length === 3 && parts[2] === "heartbeat" && method === "POST" && deviceHeader(request)) {
+    const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device");
+    const input = await body(request) ?? {};
+    const usageAccess = input.usageAccessGranted === undefined ? null : boolValue(input.usageAccessGranted);
+    const accessibility = input.accessibilityEnabled === undefined ? null : boolValue(input.accessibilityEnabled);
+    if (input.usageAccessGranted !== undefined && usageAccess === null) return error(400, "validation_error", "usageAccessGranted must be boolean");
+    if (input.accessibilityEnabled !== undefined && accessibility === null) return error(400, "validation_error", "accessibilityEnabled must be boolean");
+    await env.DB.prepare("UPDATE devices SET last_seen_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),last_sync_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),usage_access_granted=COALESCE(?,usage_access_granted),accessibility_enabled=COALESCE(?,accessibility_enabled),app_version=COALESCE(?,app_version),updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND user_id=?").bind(usageAccess, accessibility, str(input.app_version) ? input.app_version : null, da.deviceId, da.userId).run();
+    return json({ ok: true, device_id: da.deviceId, usage_access_granted: usageAccess, accessibility_enabled: accessibility });
+  }
   if (parts[0] === "devices" && parts.length === 3 && parts[2] === "commands" && method === "GET" && deviceHeader(request)) { const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device"); return pullCommands(env, da.deviceId); }
   if (parts[0] === "devices" && parts.length === 3 && parts[2] === "usage" && method === "POST" && deviceHeader(request)) { const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device"); const input = await body(request); if (!input) return error(400, "validation_error", "JSON object is required"); const prepared = await usageRows(env, da.deviceId, input); if (prepared instanceof Response) return prepared; await env.DB.batch(prepared.statements); return json({ ok: true, accepted: prepared.statements.length, batchId: prepared.batchId }); }
-  if (parts[0] === "devices" && parts.length === 5 && parts[2] === "commands" && parts[4] === "ack" && method === "POST" && deviceHeader(request)) { const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId || parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device"); const input = await body(request); return ackCommand(env, parts[3], da.deviceId, String(input?.status ?? ""), input?.error_message); }
+  if (parts[0] === "devices" && parts.length === 5 && parts[2] === "commands" && parts[4] === "ack" && method === "POST" && deviceHeader(request)) { const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device"); const input = await body(request); return ackCommand(env, parts[3], da.deviceId, String(input?.status ?? ""), input?.error_message); }
   if (parts[0] === "devices" && parts.length === 3 && parts[2] === "policy" && method === "GET" && deviceHeader(request)) {
     const da = await deviceAuth(request, env); if (da instanceof Response) return da; if (parts[1] !== da.deviceId) return error(403, "forbidden", "Device token does not match device");
     const row = await env.DB.prepare("SELECT * FROM policies WHERE device_id=? AND enabled=1 ORDER BY version DESC, updated_at DESC LIMIT 1").bind(da.deviceId).first<Record<string, unknown>>();

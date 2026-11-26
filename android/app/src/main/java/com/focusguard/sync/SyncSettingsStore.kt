@@ -2,6 +2,7 @@ package com.focusguard.sync
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -9,11 +10,21 @@ import kotlinx.coroutines.flow.map
 
 private val Context.syncSettingsDataStore by preferencesDataStore(name = "focusguard_sync_settings")
 
-data class SyncSettings(val baseUrl: String, val pairingCode: String?)
+data class SyncSettings(
+    val baseUrl: String,
+    val pairingCode: String?,
+    val lastSyncAtMillis: Long?,
+    val lastSyncError: String?,
+)
 
 class SyncSettingsStore(private val context: Context) {
     val settings: Flow<SyncSettings> = context.applicationContext.syncSettingsDataStore.data.map { prefs ->
-        SyncSettings(prefs[BASE_URL].orEmpty(), prefs[PAIRING_CODE])
+        SyncSettings(
+            baseUrl = prefs[BASE_URL].orEmpty(),
+            pairingCode = prefs[PAIRING_CODE],
+            lastSyncAtMillis = prefs[LAST_SYNC_AT_MILLIS],
+            lastSyncError = prefs[LAST_SYNC_ERROR],
+        )
     }
 
     suspend fun setBaseUrl(value: String) {
@@ -29,8 +40,18 @@ class SyncSettingsStore(private val context: Context) {
         }
     }
 
+    suspend fun recordSync(atMillis: Long, error: String?) {
+        context.applicationContext.syncSettingsDataStore.edit { prefs ->
+            prefs[LAST_SYNC_AT_MILLIS] = atMillis
+            if (error.isNullOrBlank()) prefs.remove(LAST_SYNC_ERROR) else prefs[LAST_SYNC_ERROR] = error.take(MAX_ERROR_LENGTH)
+        }
+    }
+
     private companion object {
         val BASE_URL = stringPreferencesKey("base_url")
         val PAIRING_CODE = stringPreferencesKey("pairing_code")
+        val LAST_SYNC_AT_MILLIS = longPreferencesKey("last_sync_at_millis")
+        val LAST_SYNC_ERROR = stringPreferencesKey("last_sync_error")
+        const val MAX_ERROR_LENGTH = 500
     }
 }

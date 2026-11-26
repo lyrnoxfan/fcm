@@ -41,6 +41,9 @@ class UsageRepository(context: Context) {
     fun usageAccessSettingsIntent(): Intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
     fun dailyRows(from: String, through: String): Flow<List<UsageDailyEntity>> = database.usageDao().dailyBetween(from, through)
 
+    fun recentCommands(limit: Int = 8): Flow<List<com.focusguard.data.SyncCommandEntity>> =
+        database.syncCommandDao().observeRecent(limit.coerceIn(1, 50))
+
     suspend fun snapshotAt(now: ZonedDateTime): UsageSnapshot = withContext(Dispatchers.IO) {
         val rows = database.usageDao().latestDaily()
         val starts = UsagePeriod.entries.associateWith { periodStart(now.toLocalDate(), it) }

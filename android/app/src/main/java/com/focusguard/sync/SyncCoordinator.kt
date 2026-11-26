@@ -7,13 +7,22 @@ import android.view.accessibility.AccessibilityManager
 import android.accessibilityservice.AccessibilityServiceInfo
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.focusguard.enforcement.PolicyAccessibilityService
 import com.focusguard.data.PolicyStore
 import com.focusguard.data.SyncCommandEntity
 import com.focusguard.data.UsageDatabase
 import com.focusguard.usage.UsageRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+
+data class CommandSyncUpdate(
+    val commandId: String,
+    val kind: String,
+    val status: String,
+    val detail: String? = null,
+)
 
 sealed interface SyncState {
     data object NotConfigured : SyncState
@@ -47,13 +56,31 @@ class SyncCoordinator(context: Context) {
         registration
     }
 
-    suspend fun sync(usageAccess: Boolean = usage.hasUsageAccess(), accessibilityEnabled: Boolean = false): SyncState = withContext(Dispatchers.IO) {
+    /** Serializes button, worker, and accessibility-service syncs in this process. */
+    suspend fun sync(
+        usageAccess: Boolean = usage.hasUsageAccess(),
+        accessibilityEnabled: Boolean = false,
+        onCommandStatus: ((CommandSyncUpdate) -> Unit)? = null,
+    ): SyncState = withContext(Dispatchers.IO) {
+            if (!syncMutex.tryLock()) return@withContext SyncState.Syncing
+            try {
+                syncInternal(usageAccess, accessibilityEnabled, onCommandStatus)
+            } finally {
+                syncMutex.unlock()
+            }
+        }
+
+    private suspend fun syncInternal(
+        usageAccess: Boolean,
+        accessibilityEnabled: Boolean,
+        onCommandStatus: ((CommandSyncUpdate) -> Unit)?,
+    ): SyncState {
         val configured = settings.settings.first()
-        if (configured.baseUrl.isBlank()) return@withContext SyncState.NotConfigured
+        if (configured.baseUrl.isBlank()) return recordAndReturn(SyncState.NotConfigured)
         val credentials = identity.credentials.first()
-        if (credentials.deviceToken.isNullOrBlank()) return@withContext SyncState.Unpaired
-        if (!isOnline()) return@withContext SyncState.Offline
-        try {
+        if (credentials.deviceToken.isNullOrBlank()) return recordAndReturn(SyncState.Unpaired)
+        if (!isOnline()) return recordAndReturn(SyncState.Offline)
+        return try {
             val client = SyncApiClient(configured.baseUrl)
             val deviceId = identity.getOrCreateDeviceId()
             client.heartbeat(deviceId, credentials.deviceToken, usageAccess, accessibilityEnabled)
@@ -66,48 +93,127 @@ class SyncCoordinator(context: Context) {
                 }
             }
             client.fetchPolicy(deviceId, credentials.deviceToken, policyStore.version())?.let { remote ->
-                policyStore.saveRemote(remote.config, remote.version)
+                if (policyStore.saveRemote(remote.config, remote.version)) {
+                    PolicyAccessibilityService.requestForegroundReevaluation()
+                }
             }
-            processCommands(client, deviceId, credentials.deviceToken)
-            if (!usageAccess || !accessibilityEnabled) SyncState.PermissionRequired(usageAccess, accessibilityEnabled) else SyncState.Synced
+            processCommands(client, deviceId, credentials.deviceToken, onCommandStatus)
+            recordAndReturn(
+                if (!usageAccess || !accessibilityEnabled) {
+                    SyncState.PermissionRequired(usageAccess, accessibilityEnabled)
+                } else {
+                    SyncState.Synced
+                },
+            )
         } catch (error: SyncApiException.Network) {
-            SyncState.NetworkError(error.message ?: "network unavailable")
+            recordAndReturn(SyncState.NetworkError(error.message ?: "network unavailable"))
         } catch (error: SyncApiException.Unauthorized) {
             identity.clearDeviceRegistration()
-            SyncState.ServerError(error.message ?: "device authentication rejected")
+            recordAndReturn(SyncState.ServerError(error.message ?: "device authentication rejected"))
         } catch (error: SyncApiException.Permission) {
-            SyncState.PermissionRequired(usageAccess, accessibilityEnabled)
+            recordAndReturn(SyncState.PermissionRequired(usageAccess, accessibilityEnabled))
         } catch (error: SyncApiException) {
-            SyncState.ServerError(error.message ?: "sync failed")
+            recordAndReturn(SyncState.ServerError(error.message ?: "sync failed"))
         }
     }
 
-    private suspend fun processCommands(client: SyncApiClient, deviceId: String, token: String) {
+    private suspend fun recordAndReturn(state: SyncState): SyncState {
+        val error = when (state) {
+            is SyncState.NetworkError -> state.message
+            is SyncState.ServerError -> state.message
+            SyncState.Offline -> "device offline"
+            else -> null
+        }
+        settings.recordSync(System.currentTimeMillis(), error)
+        return state
+    }
+
+    private suspend fun processCommands(
+        client: SyncApiClient,
+        deviceId: String,
+        token: String,
+        onCommandStatus: ((CommandSyncUpdate) -> Unit)?,
+    ): String? {
         var cursor: String? = null
+        var firstAckError: String? = null
         repeat(MAX_COMMAND_PAGES) {
             val page = client.pollCommands(deviceId, token, cursor)
             page.commands.forEach { command ->
                 val now = System.currentTimeMillis()
                 val existing = database.syncCommandDao().get(command.id)
-                if (existing != null) {
-                    if (existing.acknowledgedAtMillis == null) {
-                        ack(client, deviceId, token, command.id, existing.status, existing.detail)
-                        database.syncCommandDao().mark(command.id, existing.status, now, existing.detail)
-                    }
+                if (existing?.acknowledgedAtMillis != null) return@forEach
+
+                // A command already applied locally only needs its final ACK retried; do not repeat side effects.
+                if (existing != null && existing.status !in setOf(STATUS_PENDING, STATUS_DELIVERED)) {
+                    val error = ackError(client, deviceId, token, command.id, existing.status, existing.detail)
+                    val detail = appendDetail(existing.detail, error?.let { "ACK 失败：$it" })
+                    database.syncCommandDao().mark(command.id, existing.status, error?.let { null } ?: now, detail)
+                    onCommandStatus?.invoke(CommandSyncUpdate(command.id, command.type, existing.status, detail))
+                    if (error != null && firstAckError == null) firstAckError = error
                     return@forEach
                 }
-                database.syncCommandDao().insert(
-                    SyncCommandEntity(command.id, command.type, STATUS_PENDING, now, command.expiresAtMillis, null, null),
-                )
+
+                if (existing == null) {
+                    database.syncCommandDao().insert(
+                        SyncCommandEntity(command.id, command.type, STATUS_DELIVERED, now, command.expiresAtMillis, null, null),
+                    )
+                }
+
+                // A delivery ACK is separate from the final execution ACK on the server.
+                onCommandStatus?.invoke(CommandSyncUpdate(command.id, command.type, STATUS_DELIVERED))
+                val deliveryError = ackError(client, deviceId, token, command.id, STATUS_DELIVERED, null)
+                var detail = appendDetail(existing?.detail, deliveryError?.let { "送达 ACK 失败：$it" })
+                if (deliveryError != null && firstAckError == null) firstAckError = deliveryError
+
                 val expired = command.expiresAtMillis?.let { it <= now } == true
-                val outcome = if (expired) STATUS_EXPIRED else applyCommand(command)
-                val detail = if (expired) "command expired" else null
+                val outcome = if (expired) STATUS_EXPIRED else runCatching { applyCommand(command) }
+                    .getOrElse {
+                        detail = appendDetail(detail, "执行失败：${it.message ?: it.javaClass.simpleName}")
+                        STATUS_REJECTED
+                    }
+                if (expired) detail = appendDetail(detail, "命令已过期")
                 database.syncCommandDao().mark(command.id, outcome, null, detail)
-                ack(client, deviceId, token, command.id, outcome, detail)
-                database.syncCommandDao().mark(command.id, outcome, now, detail)
+
+                val executionError = ackError(client, deviceId, token, command.id, outcome, detail)
+                detail = appendDetail(detail, executionError?.let { "ACK 失败：$it" })
+                if (executionError != null && firstAckError == null) firstAckError = executionError
+                database.syncCommandDao().mark(
+                    command.id,
+                    outcome,
+                    executionError?.let { null } ?: System.currentTimeMillis(),
+                    detail,
+                )
+                onCommandStatus?.invoke(CommandSyncUpdate(command.id, command.type, outcome, detail))
             }
             cursor = page.nextCursor
-            if (cursor == null || page.commands.isEmpty()) return
+            if (cursor == null || page.commands.isEmpty()) return firstAckError
+        }
+        return firstAckError
+    }
+
+    private fun appendDetail(current: String?, addition: String?): String? = when {
+        addition.isNullOrBlank() -> current
+        current.isNullOrBlank() -> addition
+        else -> "$current · $addition"
+    }
+
+    private fun ackError(
+        client: SyncApiClient,
+        deviceId: String,
+        token: String,
+        commandId: String,
+        status: String,
+        detail: String?,
+    ): String? {
+        return try {
+            ack(client, deviceId, token, commandId, status, detail)
+            null
+        } catch (error: SyncApiException.Unauthorized) {
+            throw error
+        } catch (error: SyncApiException.Permission) {
+            throw error
+        } catch (error: SyncApiException) {
+            error.message ?: error.javaClass.simpleName
         }
     }
 
@@ -116,18 +222,27 @@ class SyncCoordinator(context: Context) {
         "refresh", "sync", "heartbeat" -> STATUS_APPLIED
         "lock", "stop", "force_stop" -> {
             policyStore.save(policyStore.load().copy(forceStopped = true))
+            PolicyAccessibilityService.requestForegroundReevaluation()
             STATUS_APPLIED
         }
         "unlock", "resume", "restore" -> {
             policyStore.save(policyStore.load().copy(forceStopped = false))
+            PolicyAccessibilityService.requestForegroundReevaluation()
             STATUS_APPLIED
         }
         "policy", "policy_update", "set_policy" -> {
             val version = command.payload.optLong("version", -1L)
             val config = command.payload.optJSONObject("config") ?: command.payload.optJSONObject("policy")
             if (version < 0L || config == null) return STATUS_REJECTED
-            val saved = runCatching { policyStore.saveRemote(com.focusguard.data.PolicyCodec.decode(config.toString()), version) }.getOrDefault(false)
-            if (saved) STATUS_APPLIED else STATUS_REJECTED
+            val decoded = runCatching { com.focusguard.data.PolicyCodec.decode(config.toString()) }.getOrNull()
+                ?: return STATUS_REJECTED
+            val saved = policyStore.saveRemote(decoded, version)
+            if (saved) {
+                PolicyAccessibilityService.requestForegroundReevaluation()
+                STATUS_APPLIED
+            } else {
+                STATUS_REJECTED
+            }
         }
         else -> STATUS_REJECTED
         }
@@ -136,8 +251,7 @@ class SyncCoordinator(context: Context) {
     private fun ack(client: SyncApiClient, deviceId: String, token: String, commandId: String, status: String, detail: String?) {
         val remoteStatus = when (status) {
             STATUS_APPLIED -> "executed"
-            STATUS_REJECTED -> "failed"
-            STATUS_EXPIRED -> "failed"
+            STATUS_REJECTED, STATUS_EXPIRED -> "failed"
             else -> "delivered"
         }
         client.ackCommand(deviceId, token, commandId, remoteStatus, detail)
@@ -152,10 +266,12 @@ class SyncCoordinator(context: Context) {
 
     companion object {
         const val STATUS_PENDING = "pending"
+        const val STATUS_DELIVERED = "delivered"
         const val STATUS_APPLIED = "applied"
         const val STATUS_EXPIRED = "expired"
         const val STATUS_REJECTED = "rejected"
         private const val MAX_COMMAND_PAGES = 3
+        private val syncMutex = Mutex()
     }
 }
 
@@ -170,7 +286,7 @@ class FocusGuardSyncWorker(appContext: Context, params: WorkerParameters) : Coro
             SyncState.Synced -> Result.success()
             SyncState.Offline, is SyncState.NetworkError -> Result.retry()
             SyncState.NotConfigured, SyncState.Unpaired, is SyncState.PermissionRequired, is SyncState.ServerError -> Result.success()
-            SyncState.Syncing -> Result.retry()
+            SyncState.Syncing -> Result.success()
         }
     }
 }
