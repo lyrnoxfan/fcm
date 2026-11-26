@@ -7,7 +7,6 @@ import android.view.accessibility.AccessibilityManager
 import android.accessibilityservice.AccessibilityServiceInfo
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.focusguard.BuildConfig
 import com.focusguard.data.PolicyStore
 import com.focusguard.data.SyncCommandEntity
 import com.focusguard.data.UsageDatabase
@@ -38,7 +37,7 @@ class SyncCoordinator(context: Context) {
         settings.setPairingCode(pairingCode)
         val configured = settings.settings.first()
         val deviceId = identity.getOrCreateDeviceId()
-        val registration = SyncApiClient(configured.baseUrl).register(pairingCode, deviceId, BuildConfig.VERSION_NAME)
+        val registration = SyncApiClient(configured.baseUrl).register(pairingCode, deviceId, "0.1.0")
         // Pairing creates the server-side device identity; persist both returned values.
         identity.setDeviceId(registration.deviceId)
         identity.setDeviceToken(registration.deviceToken)
@@ -110,7 +109,8 @@ class SyncCoordinator(context: Context) {
         }
     }
 
-    private suspend fun applyCommand(command: RemoteCommand): String = when (command.type.lowercase()) {
+    private suspend fun applyCommand(command: RemoteCommand): String {
+        return when (command.type.lowercase()) {
         "refresh", "sync", "heartbeat" -> STATUS_APPLIED
         "lock", "stop", "force_stop" -> {
             policyStore.save(policyStore.load().copy(forceStopped = true))
@@ -128,6 +128,7 @@ class SyncCoordinator(context: Context) {
             if (saved) STATUS_APPLIED else STATUS_REJECTED
         }
         else -> STATUS_REJECTED
+        }
     }
 
     private fun ack(client: SyncApiClient, deviceId: String, token: String, commandId: String, status: String, detail: String?) {

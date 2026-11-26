@@ -132,7 +132,7 @@ object PolicyCodec {
         )
     }
 
-    private fun JSONArray?.objects(): List<JSONObject> = (0 until (this?.length() ?: 0)).mapNotNull { optJSONObject(it) }
-    private fun JSONArray?.strings(): List<String> = (0 until (this?.length() ?: 0)).mapNotNull { optString(it).takeIf(String::isNotBlank) }
+    private fun JSONArray?.objects(): List<JSONObject> = (0 until (this?.length() ?: 0)).mapNotNull { this?.optJSONObject(it) }
+    private fun JSONArray?.strings(): List<String> = (0 until (this?.length() ?: 0)).mapNotNull { this?.optString(it)?.takeIf(String::isNotBlank) }
     private fun JSONArray?.toStringSet(): Set<String> = strings().toSet()
 }
