@@ -1,5 +1,6 @@
 package com.focusguard.sync
 
+import com.focusguard.BuildConfig
 import com.focusguard.core.PolicyConfig
 import com.focusguard.data.PolicyCodec
 import com.focusguard.data.UsageDailyEntity
@@ -74,6 +75,7 @@ class SyncApiClient(
                 .put("deviceId", deviceId)
                 .put("usageAccessGranted", usageAccess)
                 .put("accessibilityEnabled", accessibility)
+                .put("app_version", BuildConfig.VERSION_NAME)
                 .put("clientTimeMillis", System.currentTimeMillis())
                 .toString(),
             deviceToken,

@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.focusguard.BuildConfig
 import com.focusguard.enforcement.PolicyAccessibilityService
 import com.focusguard.data.PolicyStore
 import com.focusguard.data.SyncCommandEntity
@@ -71,7 +72,7 @@ class SyncCoordinator(context: Context) {
             if (token.isNullOrBlank()) {
                 if (!identity.registrationAllowed()) return recordAndReturn(SyncState.Unpaired)
                 val pending = identity.pendingRegistrationToken()
-                val result = client.register(pending, deviceId, "1.0.6")
+                val result = client.register(pending, deviceId, BuildConfig.VERSION_NAME)
                 require(result.deviceId == deviceId && result.deviceToken == pending) { "registration identity mismatch" }
                 identity.completeRegistration(pending)
                 token = pending

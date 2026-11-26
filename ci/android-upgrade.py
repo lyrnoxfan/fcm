@@ -3,7 +3,9 @@
 Not a test of the production-signed APK or actual network host.
 """
 from pathlib import Path
+import json
 import os
+import re
 import subprocess
 from threading import Thread
 from http.server import ThreadingHTTPServer
@@ -23,6 +25,14 @@ def start_worker(config, log):
     ], env=fixture_env, stdout=log, stderr=subprocess.STDOUT)
     smoke.wait_for(smoke.ready, 'local isolated backend', 60)
     return proc
+
+
+def installed_version_code():
+    package = smoke.shell('dumpsys', 'package', smoke.APP)
+    match = re.search(r'versionCode=(\d+)', package)
+    if not match:
+        raise AssertionError('Could not read installed app versionCode')
+    return int(match.group(1))
 
 
 def pair_old_app(code):
@@ -62,7 +72,7 @@ def run():
     assert len(legacy_rows) == 1 and legacy_rows[0]['id'] == device
     heartbeat_path = f'/api/v1/devices/{device}/heartbeat'
     smoke.wait_for(lambda: heartbeat_path in smoke.heartbeat_observations, 'legacy token heartbeat succeeded', 60)
-    print('LEGACY_STATE: ' + __import__('json').dumps({k: legacy_rows[0].get(k) for k in ['id', 'name', 'platform', 'app_version', 'created_at']}, sort_keys=True), flush=True)
+    print('LEGACY_STATE: ' + json.dumps({k: legacy_rows[0].get(k) for k in ['id', 'name', 'platform', 'app_version', 'created_at']}, sort_keys=True), flush=True)
     print('PASS: old app paired and authenticated to the legacy backend')
     return token, device, heartbeat_path
 
@@ -74,18 +84,25 @@ try:
     with (ROOT / 'legacy-worker.log').open('w') as oldlog, (ROOT / 'upgraded-worker.log').open('w') as newlog:
         worker = start_worker('legacy-wrangler.toml', oldlog)
         token, device, heartbeat_path = run()
+        legacy_version_code = installed_version_code()
         worker.terminate(); worker.wait(timeout=15); worker = None
         worker = start_worker('wrangler.toml', newlog)
         before_heartbeats = len(smoke.heartbeat_observations)
         before_register = len(smoke.registration_observations)
         smoke.adb('install', '-r', 'android/app/build/outputs/apk/debug/app-debug.apk')
+        upgraded_version_code = installed_version_code()
+        assert upgraded_version_code > legacy_version_code, (
+            f'APK was not a version upgrade: legacy={legacy_version_code}, upgraded={upgraded_version_code}'
+        )
+        print(f'OBSERVED: in-place package versionCode {legacy_version_code} -> {upgraded_version_code}', flush=True)
         smoke.launch_main()
         smoke.wait_for(lambda: heartbeat_path in smoke.heartbeat_observations[before_heartbeats:],
                        'upgraded app authenticated a fresh heartbeat with the legacy ID/token', 75)
         devices = smoke.api('/api/v1/devices', token=token)
         assert len(devices) == 1 and devices[0]['id'] == device, 'upgrade changed or duplicated legacy identity'
+        assert devices[0].get('app_version') == '1.0.7', f'upgrade heartbeat did not report new app version: {devices[0].get("app_version")}'
         assert len(smoke.registration_observations) == before_register, 'upgrade unexpectedly re-registered device'
-        print('UPGRADED_STATE: ' + __import__('json').dumps({k: devices[0].get(k) for k in ['id', 'name', 'platform', 'app_version', 'created_at']}, sort_keys=True), flush=True)
+        print('UPGRADED_STATE: ' + json.dumps({k: devices[0].get(k) for k in ['id', 'name', 'platform', 'app_version', 'created_at']}, sort_keys=True), flush=True)
         print('PASS: in-place debug APK upgrade retained legacy ID and token, authenticated heartbeat and did not re-register')
 except Exception:
     print('Foreground:', smoke.current(), flush=True)
