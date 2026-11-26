@@ -181,6 +181,8 @@ def pair(code):
     tap(inputs[0]); shell('input', 'text', BASE); key('KEYCODE_BACK')
     inputs = wait_for(lambda: f if len(f := fields()) == 2 else None, 'both pairing fields')
     tap(inputs[1]); shell('input', 'text', code); key('KEYCODE_BACK')
+    wait_for(lambda: any(BASE in (n.get('text') or '') for n in fields()),
+             'typed endpoint persists through background sync')
     tap(wait_text('配对设备'))
 
 
@@ -208,7 +210,10 @@ def scenarios():
     shell('wm', 'dismiss-keyguard')
     shell('settings', 'put', 'system', 'screen_off_timeout', '600000')
     onboarding()
+    key('KEYCODE_HOME')
     seed_grants(True)
+    wait_for(lambda: SERVICE in shell('settings', 'get', 'secure', 'enabled_accessibility_services'),
+             'Android fixture lists service as enabled')
     token = api('/api/v1/auth/register', 'POST', {'email': 'android-smoke@example.test', 'password': 'fixture-only password 1234'}, expected=201)['token']
     code = api('/api/v1/devices/pairing-codes', 'POST', {}, token, 201)['code']
     launch_main()

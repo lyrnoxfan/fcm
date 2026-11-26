@@ -41,6 +41,8 @@ import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -112,8 +114,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
+                    syncSettings.settings.map { it.baseUrl }.distinctUntilChanged().collectLatest { stored ->
+                        syncBaseUrl = stored
+                    }
+                }
+
+                LaunchedEffect(Unit) {
                     syncSettings.settings.collectLatest { settings ->
-                        syncBaseUrl = settings.baseUrl
                          foregroundSyncEnabled = settings.foregroundSyncEnabled
                         lastSyncAtMillis = settings.lastSyncAtMillis
                         lastSyncError = settings.lastSyncError
