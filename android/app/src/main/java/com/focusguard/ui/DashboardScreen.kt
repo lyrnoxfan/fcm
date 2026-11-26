@@ -1,6 +1,10 @@
 package com.focusguard.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,7 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,6 +65,7 @@ fun DashboardScreen(
     zoneId: String,
     hasUsageAccess: Boolean,
     accessibilityEnabled: Boolean,
+    serviceConnected: Boolean,
     loading: Boolean,
     syncBusy: Boolean,
     savingPolicy: Boolean,
@@ -102,7 +110,9 @@ fun DashboardScreen(
     val remainingMinutes = dailyLimit?.minus(usedMinutes)?.coerceAtLeast(0L)
     val readiness = when {
         !hasUsageAccess -> "需要授权使用情况访问"
-        !accessibilityEnabled -> "需要开启限制执行"
+        !accessibilityEnabled -> "无障碍未授权"
+        !serviceConnected -> "无障碍已开启，服务未连接"
+        policy.forceStopped -> "全局锁定规则已启用"
         paired && syncState is SyncState.Synced -> "设备已就绪"
         paired -> "已配对，等待同步"
         else -> "本机模式"
@@ -110,102 +120,122 @@ fun DashboardScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val policyIndex = 5 + if (message == null) 0 else 1
+    val syncIndex = 1 + if (message == null) 0 else 1
+    var section by remember { mutableStateOf(0) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
                 title = {
                     Column {
-                        Text("FocusGuard", fontWeight = FontWeight.SemiBold)
-                        Text("使用时长 · 设备管理", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("FocusGuard", fontWeight = FontWeight.Bold)
+                        Text("数字专注 · 设备管理", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
             )
         },
     ) { innerPadding ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxWidth().padding(innerPadding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item {
-                SummaryCard(
-                    readiness = readiness,
-                    usedMinutes = usedMinutes,
-                    remainingMinutes = remainingMinutes,
-                    zoneId = zoneId,
-                    policyEnabled = policy.enabled,
-                    onOpenPolicy = if (hasUsageAccess) {
-                        { scope.launch { listState.animateScrollToItem(policyIndex) } }
-                    } else {
-                        null
-                    },
-                )
-            }
-            message?.let { text -> item { StatusCard(text) } }
-            item {
-                SyncCard(
-                    baseUrl = syncBaseUrl,
-                    pairingCode = pairingCode,
-                    paired = paired,
-                    syncBusy = syncBusy,
-                    syncState = syncState,
-                     foregroundSyncEnabled = foregroundSyncEnabled,
-                     onForegroundSyncChanged = onForegroundSyncChanged,
-                    lastSyncAtMillis = lastSyncAtMillis,
-                    lastSyncError = lastSyncError,
-                    zoneId = zoneId,
-                    onBaseUrlChanged = onSyncBaseUrlChanged,
-                    onPairingCodeChanged = onPairingCodeChanged,
-                    onPair = onPairDevice,
-                    onSyncNow = onSyncNow,
-                )
-            }
-            item {
-                CommandCard(commands = recentCommands, zoneId = zoneId)
-            }
-            item {
-                PermissionCard(
-                    hasUsageAccess = hasUsageAccess,
-                    accessibilityEnabled = accessibilityEnabled,
-                    loading = loading,
-                    onOpenUsageSettings = onOpenUsageSettings,
-                    onOpenAccessibilitySettings = onOpenAccessibilitySettings,
-                    onRefreshPermission = onRefreshPermission,
-                    onRefreshUsage = onRefreshUsage,
-                )
-            }
-            item {
-                UsageCard(dailyRows = dailyRows, loading = loading, onRefresh = onRefreshUsage)
-            }
-            if (hasUsageAccess) {
-                item {
-                    PolicyCard(
-                        policy = policy,
-                        dailyLimitMinutes = dailyLimitMinutes,
-                        weeklyLimitMinutes = weeklyLimitMinutes,
-                        monthlyLimitMinutes = monthlyLimitMinutes,
-                        accessibilityEnabled = accessibilityEnabled,
-                        saving = savingPolicy,
-                        onDailyLimitChanged = onDailyLimitChanged,
-                        onWeeklyLimitChanged = onWeeklyLimitChanged,
-                        onMonthlyLimitChanged = onMonthlyLimitChanged,
-                        onPolicyEnabledChanged = onPolicyEnabledChanged,
-                        onForceStoppedChanged = onForceStoppedChanged,
-                        onSave = onSavePolicy,
-                        onOpenAccessibilitySettings = onOpenAccessibilitySettings,
-                    )
+        Box(Modifier.fillMaxWidth().padding(innerPadding), contentAlignment = Alignment.TopCenter) {
+            Column(Modifier.widthIn(max = 760.dp).fillMaxWidth()) {
+                Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("概览", "设备", "规则").forEachIndexed { index, label ->
+                        FilterChip(selected = section == index, onClick = {
+                            section = index
+                            scope.launch { listState.scrollToItem(when (index) {
+                                1 -> syncIndex
+                                2 -> if (hasUsageAccess) policyIndex else syncIndex + 2
+                                else -> 0
+                            }) }
+                        }, label = { Text(label) })
+                    }
                 }
-                item {
-                    AppLimitsSection(
-                        apps = apps,
-                        appLimitValue = appLimitValue,
-                        appSaving = appSaving,
-                        onAppLimitChanged = onAppLimitChanged,
-                        onSaveAppLimit = onSaveAppLimit,
-                    )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    item {
+                        SummaryCard(
+                            readiness = readiness,
+                            usedMinutes = usedMinutes,
+                            remainingMinutes = remainingMinutes,
+                            zoneId = zoneId,
+                            policyEnabled = policy.enabled,
+                            onOpenPolicy = if (hasUsageAccess) {
+                                { scope.launch { listState.animateScrollToItem(policyIndex) } }
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                    message?.let { text -> item { StatusCard(text) } }
+                    item {
+                        SyncCard(
+                            baseUrl = syncBaseUrl,
+                            pairingCode = pairingCode,
+                            paired = paired,
+                            syncBusy = syncBusy,
+                            syncState = syncState,
+                             foregroundSyncEnabled = foregroundSyncEnabled,
+                             onForegroundSyncChanged = onForegroundSyncChanged,
+                            lastSyncAtMillis = lastSyncAtMillis,
+                            lastSyncError = lastSyncError,
+                            zoneId = zoneId,
+                            onBaseUrlChanged = onSyncBaseUrlChanged,
+                            onPairingCodeChanged = onPairingCodeChanged,
+                            onPair = onPairDevice,
+                            onSyncNow = onSyncNow,
+                        )
+                    }
+                    item {
+                        CommandCard(commands = recentCommands, zoneId = zoneId)
+                    }
+                    item {
+                        PermissionCard(
+                            hasUsageAccess = hasUsageAccess,
+                            accessibilityEnabled = accessibilityEnabled,
+                            serviceConnected = serviceConnected,
+                            loading = loading,
+                            onOpenUsageSettings = onOpenUsageSettings,
+                            onOpenAccessibilitySettings = onOpenAccessibilitySettings,
+                            onRefreshPermission = onRefreshPermission,
+                            onRefreshUsage = onRefreshUsage,
+                        )
+                    }
+                    item {
+                        UsageCard(dailyRows = dailyRows, loading = loading, onRefresh = onRefreshUsage)
+                    }
+                    if (hasUsageAccess) {
+                        item {
+                            PolicyCard(
+                                policy = policy,
+                                dailyLimitMinutes = dailyLimitMinutes,
+                                weeklyLimitMinutes = weeklyLimitMinutes,
+                                monthlyLimitMinutes = monthlyLimitMinutes,
+                                accessibilityEnabled = accessibilityEnabled,
+                                saving = savingPolicy,
+                                onDailyLimitChanged = onDailyLimitChanged,
+                                onWeeklyLimitChanged = onWeeklyLimitChanged,
+                                onMonthlyLimitChanged = onMonthlyLimitChanged,
+                                onPolicyEnabledChanged = onPolicyEnabledChanged,
+                                onForceStoppedChanged = onForceStoppedChanged,
+                                onSave = onSavePolicy,
+                                onOpenAccessibilitySettings = onOpenAccessibilitySettings,
+                            )
+                        }
+                        item {
+                            AppLimitsSection(
+                                apps = apps,
+                                appLimitValue = appLimitValue,
+                                appSaving = appSaving,
+                                onAppLimitChanged = onAppLimitChanged,
+                                onSaveAppLimit = onSaveAppLimit,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -222,7 +252,8 @@ private fun SummaryCard(
     onOpenPolicy: (() -> Unit)?,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val tones = MaterialTheme.colorScheme
+        Column(Modifier.background(Brush.horizontalGradient(listOf(tones.primaryContainer, tones.secondaryContainer))).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("今天", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -385,17 +416,24 @@ private fun CommandRow(command: SyncCommandEntity, zoneId: String) {
 private fun PermissionCard(
     hasUsageAccess: Boolean,
     accessibilityEnabled: Boolean,
+    serviceConnected: Boolean,
     loading: Boolean,
     onOpenUsageSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onRefreshPermission: () -> Unit,
     onRefreshUsage: () -> Unit,
 ) {
+    var showBackgroundHelp by remember { mutableStateOf(false) }
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Text("权限状态", style = MaterialTheme.typography.titleMedium)
             PermissionRow("使用情况访问", hasUsageAccess)
-            PermissionRow("限制执行服务", accessibilityEnabled)
+            PermissionRow("Android 无障碍授权", accessibilityEnabled)
+            Text(when {
+                serviceConnected -> "限制执行服务已连接"
+                accessibilityEnabled -> "系统仍显示已授权，但服务尚未连接。请先稍候；若未恢复，可从系统设置检查。"
+                else -> "限制执行服务未连接。请按需在 Android 设置手动启用。"
+            }, style = MaterialTheme.typography.bodyMedium)
             Text("只使用系统提供的前台应用时段，不读取聊天、键盘、通知或屏幕内容。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = onOpenUsageSettings, modifier = Modifier.fillMaxWidth()) { Text("管理使用情况访问") }
             OutlinedButton(onClick = onOpenAccessibilitySettings, modifier = Modifier.fillMaxWidth()) { Text("管理限制执行服务") }
@@ -404,7 +442,16 @@ private fun PermissionCard(
                 Button(onClick = onRefreshUsage, enabled = hasUsageAccess && !loading, modifier = Modifier.weight(1f)) { BusyLabel(loading, "同步使用事件") }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            TextButton(onClick = { showBackgroundHelp = true }) { Text("后台运行与重启说明") }
         }
+    }
+    if (showBackgroundHelp) {
+        AlertDialog(
+            onDismissRequest = { showBackgroundHelp = false },
+            title = { Text("后台运行与重启") },
+            text = { Text("解锁 Android 且系统重新连接无障碍服务后，FocusGuard 才能继续执行本地规则。部分手机有自启动或后台活动开关；仅在遇到掉线时，按需到系统设置检查。无需开启悬浮窗或锁屏显示。系统锁屏、控制栏、紧急呼叫和授权撤销仍可用。") },
+            confirmButton = { TextButton(onClick = { showBackgroundHelp = false }) { Text("知道了") } },
+        )
     }
 }
 
@@ -461,7 +508,7 @@ private fun PolicyCard(
                 LimitField("每周上限（分钟）", weeklyLimitMinutes, onWeeklyLimitChanged)
                 LimitField("每月上限（分钟）", monthlyLimitMinutes, onMonthlyLimitChanged)
                 SettingSwitch("启用规则", policy.enabled, onPolicyEnabledChanged)
-                SettingSwitch("立即停止当前受限应用", policy.forceStopped, onForceStoppedChanged)
+                SettingSwitch("全局锁定（保存后生效）", policy.forceStopped, onForceStoppedChanged)
                 Button(onClick = onSave, enabled = !saving, modifier = Modifier.fillMaxWidth()) { BusyLabel(saving, "保存策略") }
             }
         }

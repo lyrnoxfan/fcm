@@ -31,7 +31,8 @@ class UsageRepository(context: Context) {
     private val policyStore = PolicyStore(database.policyDao())
 
     suspend fun loadPolicy(): PolicyConfig = policyStore.load()
-    suspend fun savePolicy(config: PolicyConfig): Long = policyStore.save(config)
+    suspend fun savePolicy(config: PolicyConfig, updateLock: Boolean = false): Long = policyStore.save(config, updateLock)
+    fun observePolicy() = policyStore.observe()
 
     fun hasUsageAccess(): Boolean {
         val appOps = appContext.getSystemService(AppOpsManager::class.java)

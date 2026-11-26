@@ -20,6 +20,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 
 /** Best-effort enforcement. It never changes system permissions or takes over the keyguard. */
 class PolicyAccessibilityService : AccessibilityService() {
@@ -29,6 +32,7 @@ class PolicyAccessibilityService : AccessibilityService() {
     private var foregroundPackage: String? = null
     private var evaluation: Job? = null
     private var sync: Job? = null
+    private var policyObserver: Job? = null
     private var lastLaunchAt = 0L
 
     private val reevaluate = object : Runnable {
@@ -44,6 +48,12 @@ class PolicyAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         activeInstance = this
+        _connection.value = true
+        android.util.Log.i("FocusGuard", "Accessibility service connected")
+        policyObserver?.cancel()
+        policyObserver = scope.launch {
+            repository.observePolicy().collectLatest { foregroundPackage?.let(::evaluatePackage) }
+        }
         handler.removeCallbacks(reevaluate)
         handler.post(reevaluate)
     }
@@ -100,9 +110,27 @@ class PolicyAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() = Unit
 
-    override fun onDestroy() {
+    private fun disconnect() {
         handler.removeCallbacks(reevaluate)
-        if (activeInstance === this) activeInstance = null
+        policyObserver?.cancel()
+        evaluation?.cancel()
+        sync?.cancel()
+        foregroundPackage = null
+        evaluatedPackage = null
+        if (activeInstance === this) {
+            activeInstance = null
+            _connection.value = false
+            android.util.Log.i("FocusGuard", "Accessibility service disconnected")
+        }
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        disconnect()
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        disconnect()
         scope.cancel()
         super.onDestroy()
     }
@@ -110,7 +138,9 @@ class PolicyAccessibilityService : AccessibilityService() {
     companion object {
         private const val EVALUATION_INTERVAL_MS = 5_000L
         @Volatile private var activeInstance: PolicyAccessibilityService? = null
-        val connected: Boolean get() = activeInstance != null
+        private val _connection = MutableStateFlow(false)
+        val connection = _connection.asStateFlow()
+        val connected: Boolean get() = _connection.value
 
         /** Called by sync workers/services after a policy or lock command is applied. */
         fun requestForegroundReevaluation() {

@@ -1,6 +1,5 @@
 package com.focusguard.sync
 
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,7 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
-import android.view.accessibility.AccessibilityManager
+import com.focusguard.enforcement.PolicyAccessibilityService
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -55,7 +54,7 @@ class SyncForegroundService : Service() {
     private suspend fun runSync() {
         try {
             val state = SyncCoordinator(this).sync(
-                accessibilityEnabled = isAccessibilityEnabled(),
+                accessibilityEnabled = PolicyAccessibilityService.connected,
                 onCommandStatus = { update ->
                     lastCommand = update
                     updateNotification(SyncState.Syncing, update)
@@ -67,15 +66,6 @@ class SyncForegroundService : Service() {
         } catch (error: Exception) {
             updateNotification(SyncState.ServerError(error.message ?: "sync failed"), lastCommand)
         }
-    }
-
-    private fun isAccessibilityEnabled(): Boolean {
-        val manager = getSystemService(AccessibilityManager::class.java) ?: return false
-        return manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            .any {
-                it.resolveInfo.serviceInfo.packageName == packageName &&
-                    it.resolveInfo.serviceInfo.name == "com.focusguard.enforcement.PolicyAccessibilityService"
-            }
     }
 
     private fun updateNotification(state: SyncState, command: CommandSyncUpdate?) {
@@ -94,7 +84,7 @@ class SyncForegroundService : Service() {
             is SyncState.PermissionRequired -> if (state.accessibility) {
                 "同步正常；使用情况权限 ${if (state.usageAccess) "已开启" else "未开启"}"
             } else {
-                "同步正常；未开启无障碍服务，远程锁定无法拦截前台应用"
+                "同步正常；无障碍服务未连接，暂不能执行前台应用限制"
             }
             is SyncState.NetworkError -> "网络错误：${state.message}"
             is SyncState.ServerError -> "服务器错误：${state.message}"

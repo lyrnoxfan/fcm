@@ -39,6 +39,8 @@ jobs:
       - name: Prepare disposable HTTPS backend and Android debug APK
         run: bash ci/android-smoke-prepare.sh
       - name: Run on an isolated Android 15 emulator
+        env:
+          FOCUSGUARD_SMOKE_REBOOT: "1"
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 35

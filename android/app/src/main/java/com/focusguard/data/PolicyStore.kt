@@ -18,6 +18,8 @@ import java.time.DayOfWeek
 import java.time.LocalTime
 import java.time.ZonedDateTime
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -48,35 +50,55 @@ object PolicyDatabaseMigration : Migration(1, 2) {
     }
 }
 
-class PolicyStore(private val dao: PolicyDao) {
+class PolicyStore internal constructor(
+    private val dao: PolicyDao,
+    private val encode: (PolicyConfig) -> String,
+    private val decode: (String) -> PolicyConfig,
+) {
+    constructor(dao: PolicyDao) : this(dao, PolicyCodec::encode, PolicyCodec::decode)
+    private companion object { val writes = Mutex() }
     fun observe(): Flow<PolicyEntity?> = dao.observe()
     suspend fun load(): PolicyConfig = runCatching {
-        dao.get()?.configJson?.let(PolicyCodec::decode) ?: PolicyConfig()
+        dao.get()?.configJson?.let(decode) ?: PolicyConfig()
     }.getOrElse { PolicyConfig() }
 
     /** Last server policy version used for conditional sync. Local edits do not advance it. */
     suspend fun version(): Long = dao.get()?.serverVersion ?: 0L
 
-    suspend fun save(config: PolicyConfig, nowMillis: Long = System.currentTimeMillis()): Long {
+    suspend fun save(config: PolicyConfig, updateLock: Boolean = false): Long = writes.withLock {
         val current = dao.get()
+        val next = if (updateLock) config else config.copy(forceStopped = current?.configJson?.let(decode)?.forceStopped ?: false)
+        writeLocal(current, next)
+    }
+
+    suspend fun setLock(locked: Boolean) = writes.withLock {
+        val current = dao.get()
+        val config = current?.configJson?.let(decode) ?: PolicyConfig()
+        writeLocal(current, config.copy(forceStopped = locked))
+    }
+
+    private suspend fun writeLocal(current: PolicyEntity?, config: PolicyConfig): Long {
         val version = (current?.version ?: 0L) + 1L
-        dao.save(PolicyEntity(version = version, serverVersion = current?.serverVersion ?: 0L, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
+        dao.save(PolicyEntity(version = version, serverVersion = current?.serverVersion ?: 0L, configJson = encode(config), updatedAtMillis = System.currentTimeMillis()))
         return version
     }
 
     /** A revoked pairing no longer owns the lock or the server policy version. */
-    suspend fun clearPairingState(nowMillis: Long = System.currentTimeMillis()) {
-        val current = dao.get() ?: return
-        val config = load().copy(forceStopped = false)
-        dao.save(current.copy(version = current.version + 1, serverVersion = 0, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
+    suspend fun clearPairingState(nowMillis: Long = System.currentTimeMillis()) = writes.withLock {
+        val current = dao.get() ?: return@withLock
+        val config = decode(current.configJson).copy(forceStopped = false)
+        dao.save(current.copy(version = current.version + 1, serverVersion = 0, configJson = encode(config), updatedAtMillis = nowMillis))
     }
 
-    suspend fun saveRemote(config: PolicyConfig, version: Long, nowMillis: Long = System.currentTimeMillis()): Boolean {
+    suspend fun saveRemote(config: PolicyConfig, version: Long, nowMillis: Long = System.currentTimeMillis()): Boolean = writes.withLock {
         val current = dao.get()
-        if (version <= (current?.serverVersion ?: 0L)) return false
-        dao.save(PolicyEntity(version = (current?.version ?: 0L) + 1L, serverVersion = version, configJson = PolicyCodec.encode(config), updatedAtMillis = nowMillis))
-        return true
+        if (version <= (current?.serverVersion ?: 0L)) return@withLock false
+        // Rule sync must not undo an explicit lock/unlock command. Those commands update the latch separately.
+        val locked = current?.configJson?.let(decode)?.forceStopped ?: false
+        dao.save(PolicyEntity(version = (current?.version ?: 0L) + 1L, serverVersion = version, configJson = encode(config.copy(forceStopped = locked)), updatedAtMillis = nowMillis))
+        true
     }
+
 }
 
 object PolicyCodec {

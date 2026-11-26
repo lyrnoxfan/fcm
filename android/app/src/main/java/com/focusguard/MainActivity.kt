@@ -18,12 +18,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.focusguard.core.PolicyConfig
 import com.focusguard.core.UsageLimitRule
 import com.focusguard.core.UsagePeriod
 import com.focusguard.core.UsageTarget
+import com.focusguard.enforcement.PolicyAccessibilityService
 import com.focusguard.data.SyncCommandEntity
 import com.focusguard.data.UsageDailyEntity
 import com.focusguard.sync.DeviceIdentityStore
@@ -74,6 +76,11 @@ class MainActivity : ComponentActivity() {
                 var apps by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
                 var dailyRows by remember { mutableStateOf(emptyList<UsageDailyEntity>()) }
                 var policy by remember { mutableStateOf(PolicyConfig()) }
+                var pendingLock by remember { mutableStateOf<Boolean?>(null) }
+                val serviceConnected by PolicyAccessibilityService.connection.collectAsStateWithLifecycle()
+                LaunchedEffect(Unit) {
+                    repository.observePolicy().collectLatest { policy = repository.loadPolicy() }
+                }
                 var dailyLimitMinutes by remember { mutableStateOf("") }
                 val appLimitInputs = remember { mutableStateMapOf<String, String>() }
                 val devicePeriodInputs = remember {
@@ -190,12 +197,13 @@ class MainActivity : ComponentActivity() {
                     zoneId = ZoneId.systemDefault().id,
                     hasUsageAccess = hasPermission,
                     accessibilityEnabled = accessibilityEnabled,
+                    serviceConnected = serviceConnected,
                     loading = loading,
                     syncBusy = syncBusy,
                     savingPolicy = savingPolicy,
                     apps = apps,
                     dailyRows = dailyRows,
-                    policy = policy,
+                    policy = policy.copy(forceStopped = pendingLock ?: policy.forceStopped),
                     dailyLimitMinutes = dailyLimitMinutes,
                     weeklyLimitMinutes = devicePeriodInputs[UsagePeriod.WEEK].orEmpty(),
                     monthlyLimitMinutes = devicePeriodInputs[UsagePeriod.MONTH].orEmpty(),
@@ -224,7 +232,7 @@ class MainActivity : ComponentActivity() {
                                 coordinator.register(pairingCode.trim(), syncBaseUrl.trim())
                                 pairingCode = ""
                                 message = "设备已配对，令牌已保存到 Android Keystore。"
-                                syncState = coordinator.sync(accessibilityEnabled = accessibilityEnabled)
+                                syncState = coordinator.sync(accessibilityEnabled = PolicyAccessibilityService.connected)
                                 foregroundSyncEnabled = true
                                  syncSettings.setForegroundSyncEnabled(true)
                                  SyncScheduler.requestNow(this@MainActivity)
@@ -246,7 +254,7 @@ class MainActivity : ComponentActivity() {
                             try {
                                 syncSettings.setBaseUrl(syncBaseUrl.trim())
                                 syncState = SyncCoordinator(this@MainActivity)
-                                    .sync(accessibilityEnabled = accessibilityEnabled)
+                                    .sync(accessibilityEnabled = PolicyAccessibilityService.connected)
                                 message = syncState?.toUserMessage()
                             } catch (error: Exception) {
                                 message = "同步失败：${error.localizedMessage ?: error.javaClass.simpleName}"
@@ -267,7 +275,7 @@ class MainActivity : ComponentActivity() {
                     onWeeklyLimitChanged = { devicePeriodInputs[UsagePeriod.WEEK] = it },
                     onMonthlyLimitChanged = { devicePeriodInputs[UsagePeriod.MONTH] = it },
                     onPolicyEnabledChanged = { policy = policy.copy(enabled = it) },
-                    onForceStoppedChanged = { policy = policy.copy(forceStopped = it) },
+                    onForceStoppedChanged = { pendingLock = it },
                     onSavePolicy = {
                         val periodInputs = mapOf(
                             UsagePeriod.DAY to dailyLimitMinutes,
@@ -289,9 +297,11 @@ class MainActivity : ComponentActivity() {
                         scope.launch {
                             savingPolicy = true
                             try {
-                                repository.savePolicy(next)
-                                policy = next
-                                message = if (accessibilityEnabled) {
+                                val lock = pendingLock
+                                repository.savePolicy(next.copy(forceStopped = lock ?: next.forceStopped), updateLock = lock != null)
+                                pendingLock = null
+                                PolicyAccessibilityService.requestForegroundReevaluation()
+                                message = if (serviceConnected) {
                                     "规则已保存；限制执行服务会在前台应用变化或下一次轮询时评估。"
                                 } else {
                                     "规则已保存到本机。开启限制执行权限后，服务才会评估前台应用。"
@@ -323,7 +333,6 @@ class MainActivity : ComponentActivity() {
                             savingAppPackage = packageName
                             try {
                                 repository.savePolicy(next)
-                                policy = next
                                 message = "已保存 $label 的本地每日限制。"
                             } catch (error: Exception) {
                                 message = "保存限制失败：${error.localizedMessage ?: error.javaClass.simpleName}"

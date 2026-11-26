@@ -231,6 +231,28 @@ def scenarios():
     key('KEYCODE_HOME'); launch_ordinary_app(); locked_ui()
     print('PASS: real remote lock, normal app surfaced restriction, only requested text present, Back did not dismiss')
 
+    # Removing the fixture tunnel makes only the backend unavailable, not the radio.
+    adb('reverse', '--remove', 'tcp:18787')
+    try:
+        key('KEYCODE_HOME'); launch_ordinary_app(); locked_ui()
+        print('PASS: an already-applied lock still restricts an ordinary app without the backend')
+        if os.environ.get('FOCUSGUARD_SMOKE_REBOOT') == '1':
+            adb('reboot')
+            def booted_again():
+                try:
+                    return shell('getprop', 'sys.boot_completed') == '1'
+                except (RuntimeError, subprocess.TimeoutExpired):
+                    return False
+            wait_for(booted_again, 'disposable emulator reboot completed', 150)
+            key('KEYCODE_WAKEUP')
+            shell('wm', 'dismiss-keyguard')
+            wait_for(lambda: SERVICE in shell('settings', 'get', 'secure', 'enabled_accessibility_services'),
+                     'Android still lists service as enabled after reboot')
+            launch_ordinary_app(); locked_ui()
+            print('PASS: stored lock restored after normal reboot and Android unlock without backend')
+    finally:
+        adb('reverse', 'tcp:18787', 'tcp:18787')
+
     key('KEYCODE_SLEEP')
     wait_for(lambda: 'mWakefulness=Asleep' in shell('dumpsys', 'power') or 'mWakefulness=Dozing' in shell('dumpsys', 'power'), 'system sleep')
     key('KEYCODE_WAKEUP')

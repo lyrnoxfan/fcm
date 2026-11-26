@@ -3,8 +3,6 @@ package com.focusguard.sync
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.view.accessibility.AccessibilityManager
-import android.accessibilityservice.AccessibilityServiceInfo
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.focusguard.enforcement.PolicyAccessibilityService
@@ -231,12 +229,12 @@ class SyncCoordinator(context: Context) {
         return when (command.type.lowercase()) {
         "refresh", "sync", "heartbeat" -> STATUS_APPLIED
         "lock", "stop", "force_stop" -> {
-            policyStore.save(policyStore.load().copy(forceStopped = true))
+            policyStore.setLock(true)
             PolicyAccessibilityService.requestForegroundReevaluation()
             STATUS_APPLIED
         }
         "unlock", "resume", "restore" -> {
-            policyStore.save(policyStore.load().copy(forceStopped = false))
+            policyStore.setLock(false)
             PolicyAccessibilityService.requestForegroundReevaluation()
             STATUS_APPLIED
         }
@@ -287,11 +285,7 @@ class SyncCoordinator(context: Context) {
 
 class FocusGuardSyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
-        val accessibility = applicationContext.getSystemService(AccessibilityManager::class.java)
-        val accessibilityEnabled = accessibility?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            ?.any { it.resolveInfo.serviceInfo.packageName == applicationContext.packageName && it.resolveInfo.serviceInfo.name == "com.focusguard.enforcement.PolicyAccessibilityService" }
-            ?: false
-        val state = SyncCoordinator(applicationContext).sync(accessibilityEnabled = accessibilityEnabled)
+        val state = SyncCoordinator(applicationContext).sync(accessibilityEnabled = PolicyAccessibilityService.connected)
         return when (state) {
             SyncState.Synced -> Result.success()
             SyncState.Offline, is SyncState.NetworkError -> Result.retry()
