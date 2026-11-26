@@ -5,12 +5,16 @@ fixture="$RUNNER_TEMP/focusguard-smoke"
 mkdir -p "$fixture"
 openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
   -subj '/CN=FocusGuard smoke CA' -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
   -keyout "$fixture/ca.key" -out "$fixture/ca.pem" >/dev/null 2>&1
 openssl req -new -newkey rsa:2048 -nodes -subj '/CN=127.0.0.1' \
   -keyout "$fixture/server.key" -out "$fixture/server.csr" >/dev/null 2>&1
-printf '%s\n' 'subjectAltName=IP:127.0.0.1' 'extendedKeyUsage=serverAuth' > "$fixture/leaf.ext"
+printf '%s\n' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature,keyEncipherment' \
+  'subjectAltName=IP:127.0.0.1' 'extendedKeyUsage=serverAuth' > "$fixture/leaf.ext"
 openssl x509 -req -in "$fixture/server.csr" -CA "$fixture/ca.pem" -CAkey "$fixture/ca.key" \
   -CAcreateserial -days 1 -sha256 -extfile "$fixture/leaf.ext" -out "$fixture/server.pem"
+openssl verify -x509_strict -purpose sslserver -CAfile "$fixture/ca.pem" \
+  -verify_ip 127.0.0.1 "$fixture/server.pem"
 # Temporary Debug-only trust of this job's ephemeral CA. No change to the application manifest or trust store in Git.
 test ! -e android/app/src/debug/AndroidManifest.xml
 mkdir -p android/app/src/debug/res/{xml,raw}
