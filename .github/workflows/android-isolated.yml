@@ -20,12 +20,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Enable emulator acceleration
+      - name: Select emulator acceleration
+        id: acceleration
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          test -r /dev/kvm && test -w /dev/kvm
+          if [ ! -c /dev/kvm ]; then sudo modprobe kvm_intel || true; fi
+          if [ -c /dev/kvm ]; then
+            ls -l /dev/kvm
+            sudo chmod a+rw /dev/kvm
+          fi
+          options='-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim'
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo 'Using accessible KVM device'
+          else
+            echo 'No accessible KVM; using software emulation'
+            options="$options -accel off"
+          fi
+          echo "options=$options" >> "$GITHUB_OUTPUT"
       - name: Prepare disposable HTTPS backend and Android debug APK
         run: bash ci/android-smoke-prepare.sh
       - name: Run on an isolated Android 15 emulator
@@ -36,5 +46,6 @@ jobs:
           arch: x86_64
           profile: pixel_6
           cores: 2
-          emulator-boot-timeout: 300
+          emulator-boot-timeout: 600
+          emulator-options: ${{ steps.acceleration.outputs.options }}
           script: python3 -u ci/android-smoke.py
