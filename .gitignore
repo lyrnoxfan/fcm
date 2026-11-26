@@ -19,6 +19,7 @@ web/.astro/
 .env.*
 !.env.example
 backend/.wrangler/
+.wrangler/
 
 # Test and tool output
 coverage/
